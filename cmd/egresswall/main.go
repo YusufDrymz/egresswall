@@ -25,7 +25,9 @@ func main() {
 		err = runCheck(os.Args[2:])
 	case "validate":
 		err = runValidate(os.Args[2:])
-	case "learn", "enforce":
+	case "learn":
+		err = runLearn(os.Args[2:])
+	case "enforce":
 		err = notYet(os.Args[1])
 	case "version":
 		fmt.Println("egresswall", version)
@@ -47,7 +49,7 @@ func usage() {
 
   check     ask the policy about one destination, e.g. check registry.npmjs.org:443
   validate  parse a policy file and report every problem in it
-  learn     watch outbound traffic and write a policy (linux, not implemented yet)
+  learn     watch outbound traffic and write a policy (linux, root)
   enforce   apply a policy with nftables (linux, not implemented yet)
   version
 
