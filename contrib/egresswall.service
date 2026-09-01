@@ -1,0 +1,26 @@
+# Install:
+#   cp egresswall /usr/local/bin/
+#   mkdir -p /etc/egresswall && cp learned.yaml /etc/egresswall/policy.yaml
+#   cp contrib/egresswall.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now egresswall
+#
+# Add -forward to ExecStart if containers on this host should be filtered too.
+[Unit]
+Description=egresswall egress firewall
+Documentation=https://github.com/YusufDrymz/egresswall
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/egresswall enforce -policy /etc/egresswall/policy.yaml
+# SIGINT is a clean stop: the table is removed and the host is unfiltered.
+KillSignal=SIGINT
+TimeoutStopSec=10
+# On a crash the table stays and keeps refusing; restart quickly so the
+# address sets get fed again before they expire.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

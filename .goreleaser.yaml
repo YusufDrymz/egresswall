@@ -23,6 +23,7 @@ archives:
       - README.tr.md
       - LICENSE
       - examples/egresswall.yaml
+      - contrib/egresswall.service
 
 checksum:
   name_template: checksums.txt
