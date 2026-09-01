@@ -37,16 +37,16 @@ jobs:
         run: |
           sudo ./egresswall learn -duration 10s -out learned.yaml &
           sleep 3
-          curl -sS -o /dev/null https://example.com
-          curl -sS -o /dev/null http://neverssl.com
+          curl -sS --connect-timeout 10 -o /dev/null https://example.com
+          curl -sS --connect-timeout 10 -o /dev/null http://example.com
           wait
           cat learned.yaml
       - name: the policy says what happened
         run: |
           ./egresswall validate -policy learned.yaml
           ./egresswall check -policy learned.yaml example.com:443
-          ./egresswall check -policy learned.yaml neverssl.com:80
-          if ./egresswall check -policy learned.yaml neverssl.com:443; then echo "port 443 was never used"; exit 1; fi
+          ./egresswall check -policy learned.yaml example.com:80
+          if ./egresswall check -policy learned.yaml example.com:22; then echo "port 22 was never used"; exit 1; fi
           if ./egresswall check -policy learned.yaml evil.example:443; then echo "unknown host must be denied"; exit 1; fi
 
   # enforce for real: load a policy that allows example.com and the runner's
@@ -80,13 +80,15 @@ jobs:
       - name: enforce while curling
         run: |
           sudo ./egresswall enforce -policy policy.yaml -verbose 2>enforce.log &
+          EW=$!
           sleep 3
           sudo nft list ruleset
-          curl -sS --connect-timeout 5 -o /dev/null -w "example.com: %{http_code}\n" https://example.com
-          if curl -sS --connect-timeout 5 -o /dev/null http://neverssl.com; then echo "neverssl should have been refused"; exit 1; fi
+          curl -sS --connect-timeout 10 -o /dev/null -w "example.com: %{http_code}\n" https://example.com
+          if curl -sS --connect-timeout 5 -o /dev/null http://github.com; then echo "github.com:80 should have been refused"; exit 1; fi
           if curl -sS --connect-timeout 5 -o /dev/null https://1.1.1.1; then echo "raw ip should have been refused"; exit 1; fi
-          sudo kill -INT %1
-          wait
+          sleep 1
+          sudo kill -INT $EW
+          wait $EW || true
           echo "--- daemon log ---"; cat enforce.log
-          grep -q "refused .*neverssl.com" enforce.log || (echo "refusal was not reported with its name"; exit 1)
+          grep -q "refused .*github.com):80" enforce.log || (echo "refusal was not reported with its name"; exit 1)
           if sudo nft list tables | grep -q egresswall; then echo "table left behind"; exit 1; fi
