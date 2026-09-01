@@ -12,9 +12,9 @@ dropped and logged, including the first outbound call of a stolen token.
 [![CI](https://github.com/YusufDrymz/egresswall/actions/workflows/ci.yml/badge.svg)](https://github.com/YusufDrymz/egresswall/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Status: early.** The policy format and the matcher are done and tested, and
-> `egresswall check` works everywhere. `learn` and `enforce` need Linux, nftables
-> and root, and are being built next. Nothing here is running in production yet.
+> **Status: early.** `learn` and `check` work (Linux, root for `learn`; the
+> policy engine runs anywhere). `enforce` is next. Nothing here is running in
+> production yet.
 
 ## Why
 
@@ -30,13 +30,61 @@ host or a bare-metal box running your app gets `ufw`, which is inbound-minded, o
 hand-written nftables rules nobody wants to maintain by hand. That gap is the
 whole project.
 
-## How it will work
+## How it works
 
 ```
-$ sudo egresswall learn --out egresswall.yaml      # watch for a day
+$ sudo egresswall learn -out egresswall.yaml       # watch for a day
 $ egresswall check registry.npmjs.org:443          # ask the policy, offline
-$ sudo egresswall enforce --policy egresswall.yaml # drop the rest, log it
+$ sudo egresswall enforce -policy egresswall.yaml  # drop the rest, log it (soon)
 ```
+
+Eight seconds of `learn` on a box that fetched two pages:
+
+```
+$ sudo egresswall learn -duration 8s -out learned.yaml
+egresswall: learning, writing to learned.yaml on stop
+new  192.168.65.7:53 udp
+new  example.com:443 tcp
+new  neverssl.com:80 tcp
+egresswall: 3 destinations after 8s, policy written to learned.yaml
+```
+
+```yaml
+# written by egresswall learn on 2026-09-01 19:49 UTC after 8s of traffic
+# every rule below is something this host actually did; review, then enforce
+version: 1
+default: deny
+
+deny:
+  - name: cloud-metadata
+    comment: "never seen during learn, which is how it should stay"
+    cidrs: ["169.254.169.254"]
+
+allow:
+  - name: "example.com"
+    domains: ["example.com"]
+    ports: ["443"]
+    proto: tcp
+    comment: "first 09-01 19:49, last 09-01 19:49, 1 hits"
+  - name: "neverssl.com"
+    domains: ["neverssl.com"]
+    ports: ["80"]
+    proto: tcp
+    comment: "first 09-01 19:49, last 09-01 19:49, 5 hits"
+  - name: "192.168.65.7"
+    cidrs: ["192.168.65.7"]
+    ports: ["53"]
+    proto: udp
+    comment: "no dns name seen for this address; first 09-01 19:49, last 09-01 19:49, 6 hits"
+```
+
+`learn` opens one raw socket (AF_PACKET, cooked mode) on every interface and
+reads two things off it: DNS answers, which build an address-to-name map, and
+the first packet of every outbound flow, which the kernel marks as outgoing so
+there is no guessing from addresses. TCP flows are counted at the SYN; for UDP,
+whoever sent the first packet of a tuple is the initiator, so our replies to
+inbound traffic do not show up as destinations. No conntrack, no nftables, no
+kernel module: if the box can run a Go binary as root it can learn.
 
 - **Domains, not IPs.** The policy says `*.pypi.org`; the daemon watches DNS
   answers on the host and keeps an nftables set of the IPs those names resolve
@@ -97,6 +145,9 @@ Honest list, because an egress filter that oversells itself is worse than none:
 - **Allowed hosts that store arbitrary data.** If `*.githubusercontent.com` or an
   S3 endpoint is allowed, an attacker can exfiltrate through them. Keep allow rules
   as narrow as the workload lets you.
+- **Learn sees a sample, not the truth.** A weekly cron job that never ran during
+  the learn window is not in the policy. Learn for long enough, read the file,
+  and start `enforce` in dry-run.
 - **Shared CDN addresses.** An allowed name and a hostile one can resolve to the
   same edge IP. The daemon allows the IP because an allowed name resolved to it;
   that is a known weakness of every DNS-driven allowlist, and the reason
@@ -104,8 +155,6 @@ Honest list, because an egress filter that oversells itself is worse than none:
 
 ## Roadmap
 
-- `learn`: passive DNS on the host plus conntrack events, written as a policy
-  file with first-seen and hit counts as comments.
 - `enforce`: nftables table owned by egresswall, DNS-driven IP sets with TTL,
   nflog for refusals, dry-run mode that logs without dropping.
 - Per-process and per-cgroup rules, so "only the app may reach the database"

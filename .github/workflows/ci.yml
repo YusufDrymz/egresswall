@@ -22,3 +22,29 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test -race -cover ./...
+
+  # learn needs a raw socket, so this runs for real on the ubuntu runner:
+  # capture for a few seconds, make two connections, check what got written.
+  learn-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go build -o egresswall ./cmd/egresswall
+      - name: learn while curling
+        run: |
+          sudo ./egresswall learn -duration 10s -out learned.yaml &
+          sleep 3
+          curl -sS -o /dev/null https://example.com
+          curl -sS -o /dev/null http://neverssl.com
+          wait
+          cat learned.yaml
+      - name: the policy says what happened
+        run: |
+          ./egresswall validate -policy learned.yaml
+          ./egresswall check -policy learned.yaml example.com:443
+          ./egresswall check -policy learned.yaml neverssl.com:80
+          if ./egresswall check -policy learned.yaml neverssl.com:443; then echo "port 443 was never used"; exit 1; fi
+          if ./egresswall check -policy learned.yaml evil.example:443; then echo "unknown host must be denied"; exit 1; fi

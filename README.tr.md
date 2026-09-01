@@ -9,9 +9,9 @@ sunucuları için önce öğrenen sonra uygulayan bir giden-trafik firewall'udur
 yerine domain ve port olarak yazsın. `enforce` moduna geçin, listede olmayan her
 şey düşürülsün ve loglansın; çalınmış bir token'ın ilk dışarı çıkışı dahil.
 
-> **Durum: erken.** Policy formatı ve eşleştirici bitti ve testli; `egresswall
-> check` her yerde çalışıyor. `learn` ve `enforce` Linux, nftables ve root ister,
-> sırada onlar var. Henüz hiçbir yerde production'da değil.
+> **Durum: erken.** `learn` ve `check` çalışıyor (Linux, `learn` için root;
+> policy motoru her yerde). Sırada `enforce` var. Henüz hiçbir yerde
+> production'da değil.
 
 ## Neden
 
@@ -27,13 +27,20 @@ Docker host'u ya da bare-metal makine ise gelen trafik odaklı `ufw` ile ya da
 kimsenin elle bakmak istemediği nftables kurallarıyla kalıyor. Proje tamamen o
 boşluk için.
 
-## Nasıl çalışacak
+## Nasıl çalışıyor
 
 ```
-$ sudo egresswall learn --out egresswall.yaml      # bir gün izle
+$ sudo egresswall learn -out egresswall.yaml       # bir gün izle
 $ egresswall check registry.npmjs.org:443          # policy'ye sor, offline
-$ sudo egresswall enforce --policy egresswall.yaml # gerisini düşür, logla
+$ sudo egresswall enforce -policy egresswall.yaml  # gerisini düşür, logla (yakında)
 ```
+
+`learn` her arayüzde tek bir raw socket (AF_PACKET, cooked mod) açar ve iki şey
+okur: adres→isim haritasını kuran DNS cevapları ve her giden akışın ilk paketi.
+Yönü kernel işaretler (PACKET_OUTGOING), adresten tahmin yok. TCP akışı SYN'de
+sayılır; UDP'de tuple'ın ilk paketini kim attıysa başlatan odur, böylece bizim
+gelen trafiğe verdiğimiz cevaplar hedef olarak görünmez. conntrack yok, nftables
+yok, kernel modülü yok. Örnek çıktı için İngilizce README.
 
 - **IP değil domain.** Policy `*.pypi.org` der; daemon host üstündeki DNS
   cevaplarını izler, o isimlerin çözüldüğü IP'leri TTL ile süren dolan bir
@@ -72,8 +79,6 @@ allow  registry.npmjs.org:443  domain registry.npmjs.org  (rule package-registri
 
 ## Yol haritası
 
-- `learn`: host üstünde pasif DNS + conntrack olayları, ilk görülme ve sayaç
-  yorumlarıyla policy dosyası.
 - `enforce`: egresswall'a ait nftables tablosu, TTL'li DNS güdümlü IP set'leri,
   retler için nflog, düşürmeden sadece loglayan dry-run.
 - Süreç / cgroup bazlı kurallar.
