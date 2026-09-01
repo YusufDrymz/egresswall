@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -263,4 +264,63 @@ func (r *compiledRule) match(domain string, ip netip.Addr, port uint16, proto st
 		}
 	}
 	return false, ""
+}
+
+// PortRange is inclusive on both ends.
+type PortRange struct{ Lo, Hi uint16 }
+
+// RuleView is the compiled shape of one rule, for code that has to turn the
+// policy into something else (nftables rules, a printout) rather than ask it
+// about one destination.
+type RuleView struct {
+	Name     string
+	Verdict  Verdict
+	Exact    []string       // "example.com"
+	Suffixes []string       // ".example.com", from "*.example.com"
+	Prefixes []netip.Prefix // masked
+	Ports    []PortRange    // empty: any
+	Proto    string         // "", "tcp", "udp"
+	AnyHost  bool
+}
+
+// Rules returns the rules in evaluation order: deny first, then allow, each
+// in file order. Indexes are stable and match DomainRules.
+func (s *Set) Rules() []RuleView {
+	out := make([]RuleView, len(s.rules))
+	for i, r := range s.rules {
+		v := RuleView{Name: r.name, Verdict: r.verdict, Proto: r.proto, AnyHost: r.anyHost}
+		for d := range r.exact {
+			v.Exact = append(v.Exact, d)
+		}
+		sort.Strings(v.Exact)
+		v.Suffixes = append(v.Suffixes, r.suffixes...)
+		v.Prefixes = append(v.Prefixes, r.prefixes...)
+		for _, pr := range r.ports {
+			v.Ports = append(v.Ports, PortRange{pr.lo, pr.hi})
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// DomainRules lists the rules whose domain patterns cover name, in
+// evaluation order. This is what decides which address sets a DNS answer
+// for name should land in.
+func (s *Set) DomainRules(name string) []int {
+	name = NormalizeDomain(name)
+	var out []int
+	for i := range s.rules {
+		r := &s.rules[i]
+		if _, ok := r.exact[name]; ok {
+			out = append(out, i)
+			continue
+		}
+		for _, suf := range r.suffixes {
+			if strings.HasSuffix(name, suf) {
+				out = append(out, i)
+				break
+			}
+		}
+	}
+	return out
 }

@@ -134,3 +134,45 @@ func TestSingleAddressAsCIDR(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestRulesAndDomainRules(t *testing.T) {
+	s := mustParse(t, sample)
+	rules := s.Rules()
+	if len(rules) != 5 || rules[0].Name != "no-metadata" || rules[0].Verdict != Deny {
+		t.Fatalf("deny rule must come first: %+v", rules)
+	}
+	pr := rules[1]
+	if pr.Name != "package-registries" || len(pr.Exact) != 1 || pr.Exact[0] != "registry.npmjs.org" ||
+		len(pr.Suffixes) != 1 || pr.Suffixes[0] != ".pypi.org" || len(pr.Ports) != 1 || pr.Ports[0] != (PortRange{443, 443}) {
+		t.Fatalf("%+v", pr)
+	}
+	if !rules[4].AnyHost || rules[4].Proto != "udp" {
+		t.Fatalf("%+v", rules[4])
+	}
+	cases := map[string][]int{
+		"registry.npmjs.org": {1},
+		"files.pypi.org":     {1},
+		"pypi.org":           nil,
+		"api.github.com":     {2},
+		"GitHub.com.":        {2},
+		"nothing.example":    nil,
+	}
+	for name, want := range cases {
+		got := s.DomainRules(name)
+		if len(got) != len(want) {
+			t.Fatalf("%s: got %v want %v", name, got, want)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("%s: got %v want %v", name, got, want)
+			}
+		}
+	}
+}
+
+func TestDomainRulesIncludesDeny(t *testing.T) {
+	s := mustParse(t, "version: 1\ndefault: deny\ndeny:\n  - domains: ['bad.example']\nallow:\n  - domains: ['*.example']\n")
+	if got := s.DomainRules("bad.example"); len(got) != 2 || got[0] != 0 || got[1] != 1 {
+		t.Fatalf("a name can feed both a deny set and an allow set: %v", got)
+	}
+}
