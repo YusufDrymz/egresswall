@@ -28,6 +28,7 @@ func runEnforce(args []string) error {
 	print := fs.Bool("print", false, "print the nftables ruleset the policy turns into and exit")
 	off := fs.Bool("off", false, "remove a leftover egresswall table and exit")
 	verbose := fs.Bool("verbose", false, "also report allowed connections")
+	forward := fs.Bool("forward", false, "also filter traffic this host forwards: containers, and anything routed through it")
 	fs.Parse(args)
 
 	if *off {
@@ -48,6 +49,7 @@ func runEnforce(args []string) error {
 		return err
 	}
 	plan := nft.Build(set)
+	plan.Forward = *forward
 	if *print {
 		fmt.Print(plan.Text())
 		return nil
