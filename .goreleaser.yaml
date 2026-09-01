@@ -1,0 +1,35 @@
+version: 2
+
+project_name: egresswall
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/egresswall
+    binary: egresswall
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+
+archives:
+  - formats: [tar.gz]
+    files:
+      - README.md
+      - README.tr.md
+      - LICENSE
+      - examples/egresswall.yaml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^readme"
+      - "^ci:"
