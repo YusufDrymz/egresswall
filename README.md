@@ -132,6 +132,10 @@ Things worth knowing before running it on a box you care about:
   the table stays and keeps refusing; `enforce -off` removes it.
 - Inbound is untouched. SSH sessions survive; established connections are
   accepted without further checks.
+- Always allowed, before the policy: loopback, IPv6 link-local and multicast
+  (neighbour discovery, MLD) and IPv4 multicast (IGMP). Refusing those breaks
+  the host's own networking and none of it leaves the link. Plain ICMP is not
+  in the policy language yet, so outbound ping is refused.
 - By default only the host's own output chain is filtered. `-forward` adds a
   chain on the forward hook so containers, and anything else this host routes,
   get the same policy; traffic that stays on a docker bridge is left alone.

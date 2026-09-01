@@ -60,6 +60,16 @@ type Plan struct {
 // ForwardChain is the name of the optional forward-hook chain.
 const ForwardChain = "forward"
 
+// housekeeping destinations are accepted before the policy in every chain:
+// neighbour discovery, router solicitation and MLD live on IPv6 link-local
+// and multicast, IGMP on IPv4 multicast. Refusing them silently breaks IPv6,
+// and none of them reach past the local link.
+var housekeeping = []netip.Prefix{
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+}
+
 // bridgePrefixes are output interface name prefixes whose traffic the
 // forward chain accepts unconditionally: it is going to a container, not
 // leaving the host.
@@ -166,6 +176,9 @@ func (p *Plan) Text() string {
 
 func (p *Plan) chainBody(b *strings.Builder) {
 	b.WriteString("\t\tct state established,related accept\n")
+	for _, pfx := range housekeeping {
+		fmt.Fprintf(b, "\t\t%s daddr %s accept\n", familyWord(familyOf(pfx)), pfx)
+	}
 	for _, a := range p.Atoms {
 		b.WriteString("\t\t")
 		b.WriteString(a.text())
@@ -199,6 +212,13 @@ func (a Atom) text() string {
 		parts = append(parts, fmt.Sprintf("log prefix %q reject with icmpx type admin-prohibited", LogPrefix(a.Rule)))
 	}
 	return strings.Join(parts, " ")
+}
+
+func familyOf(p netip.Prefix) Family {
+	if p.Addr().Is4() {
+		return V4
+	}
+	return V6
 }
 
 func familyWord(f Family) string {

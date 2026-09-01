@@ -75,6 +75,10 @@ Bilinmesi gerekenler:
   ve reddetmeye devam eder; `enforce -off` kaldırır.
 - Gelen trafiğe dokunulmaz, SSH oturumları yaşar; kurulu bağlantılar
   kontrolsüz kabul edilir.
+- Policy'den önce her zaman izinli: loopback, IPv6 link-local ve multicast
+  (neighbour discovery, MLD), IPv4 multicast (IGMP). Bunları reddetmek host'un
+  kendi ağını bozar ve hiçbiri link'in dışına çıkmaz. Düz ICMP henüz policy
+  dilinde yok, giden ping reddedilir.
 - Varsayılan olarak sadece host'un kendi output chain'i filtrelenir. `-forward`
   forward hook'una da bir chain ekler: container'lar ve host'un yönlendirdiği
   her şey aynı policy'yi alır; docker bridge içinde kalan trafiğe dokunulmaz.

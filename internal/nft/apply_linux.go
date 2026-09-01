@@ -99,6 +99,13 @@ func (h *Handle) rule(c *nftables.Chain, exprs []expr.Any) {
 
 func (h *Handle) chainBody(c *nftables.Chain, p *Plan) error {
 	h.rule(c, establishedAccept())
+	for _, pfx := range housekeeping {
+		exprs, err := h.atomExprs(Atom{Family: familyOf(pfx), Prefix: pfx, Verdict: policy.Allow})
+		if err != nil {
+			return err
+		}
+		h.rule(c, exprs)
+	}
 	for _, a := range p.Atoms {
 		exprs, err := h.atomExprs(a)
 		if err != nil {

@@ -76,6 +76,9 @@ func TestText(t *testing.T) {
 		"type filter hook output priority filter; policy drop;",
 		`oif "lo" accept`,
 		"ct state established,related accept",
+		"ip6 daddr fe80::/10 accept",
+		"ip6 daddr ff00::/8 accept",
+		"ip daddr 224.0.0.0/4 accept",
 		`ip daddr 169.254.169.254 log prefix "egresswall deny[no-metadata]: " reject with icmpx type admin-prohibited`,
 		"udp dport 53 accept",
 		"ip daddr @r2_v4 meta l4proto { tcp, udp } th dport 443 accept",
@@ -90,9 +93,12 @@ func TestText(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
 	}
-	// the deny rule must precede every accept
+	// the deny rule must precede every policy accept, but housekeeping comes first
 	if strings.Index(out, "deny[no-metadata]") > strings.Index(out, "udp dport 53 accept") {
 		t.Fatal("deny rules must come before allow rules")
+	}
+	if strings.Index(out, "ff00::/8 accept") > strings.Index(out, "deny[no-metadata]") {
+		t.Fatal("link-local housekeeping is not subject to the policy")
 	}
 }
 
