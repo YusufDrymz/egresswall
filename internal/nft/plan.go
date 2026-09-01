@@ -26,8 +26,9 @@ const (
 )
 
 // Atom is one nftables rule. A policy rule expands into several: one per
-// address family it touches, per protocol, per port range. Ranges of ports
-// stay ranges; addresses are either a prefix or a set lookup.
+// address family it touches, per port range. Ranges of ports stay ranges;
+// addresses are either a prefix or a set lookup. An empty Proto with a port
+// means tcp or udp, matched in one rule.
 type Atom struct {
 	Family  Family
 	Proto   string // "", "tcp", "udp"
@@ -50,7 +51,19 @@ type Plan struct {
 	Sets        []SetDef
 	Atoms       []Atom
 	DefaultDeny bool
+	// Forward adds a second chain on the forward hook so traffic this host
+	// routes, containers above all, gets the same policy. Traffic that stays
+	// on a docker bridge is left alone.
+	Forward bool
 }
+
+// ForwardChain is the name of the optional forward-hook chain.
+const ForwardChain = "forward"
+
+// bridgePrefixes are output interface name prefixes whose traffic the
+// forward chain accepts unconditionally: it is going to a container, not
+// leaving the host.
+var bridgePrefixes = []string{"docker", "br-"}
 
 func setName(rule int, f Family) string {
 	if f == V6 {
@@ -75,10 +88,6 @@ func Build(s *policy.Set) *Plan {
 			p.Sets = append(p.Sets, SetDef{setName(i, V4), V4, i}, SetDef{setName(i, V6), V6, i})
 		}
 		protos := []string{r.Proto}
-		if r.Proto == "" && len(r.Ports) > 0 {
-			// a port without a protocol means both; nft needs them spelled out
-			protos = []string{"tcp", "udp"}
-		}
 		ports := r.Ports
 		if len(ports) == 0 {
 			ports = []policy.PortRange{{}}
@@ -143,6 +152,19 @@ func (p *Plan) Text() string {
 	}
 	fmt.Fprintf(&b, "\tchain %s {\n\t\ttype filter hook output priority filter; policy %s;\n", ChainName, policyWord)
 	b.WriteString("\t\toif \"lo\" accept\n")
+	p.chainBody(&b)
+	if p.Forward {
+		fmt.Fprintf(&b, "\tchain %s {\n\t\ttype filter hook forward priority filter; policy %s;\n", ForwardChain, policyWord)
+		for _, pfx := range bridgePrefixes {
+			fmt.Fprintf(&b, "\t\toifname %q accept\n", pfx+"*")
+		}
+		p.chainBody(&b)
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func (p *Plan) chainBody(b *strings.Builder) {
 	b.WriteString("\t\tct state established,related accept\n")
 	for _, a := range p.Atoms {
 		b.WriteString("\t\t")
@@ -150,10 +172,9 @@ func (p *Plan) Text() string {
 		b.WriteByte('\n')
 	}
 	if p.DefaultDeny {
-		fmt.Fprintf(&b, "\t\tlog prefix %q reject with icmpx type admin-prohibited\n", LogPrefix(""))
+		fmt.Fprintf(b, "\t\tlog prefix %q reject with icmpx type admin-prohibited\n", LogPrefix(""))
 	}
-	b.WriteString("\t}\n}\n")
-	return b.String()
+	b.WriteString("\t}\n")
 }
 
 func (a Atom) text() string {
@@ -164,12 +185,13 @@ func (a Atom) text() string {
 	case a.Set != "":
 		parts = append(parts, familyWord(a.Family)+" daddr @"+a.Set)
 	}
-	if a.Proto != "" {
-		if a.Port.Hi != 0 {
-			parts = append(parts, a.Proto+" dport "+portText(a.Port))
-		} else {
-			parts = append(parts, "meta l4proto "+a.Proto)
-		}
+	switch {
+	case a.Proto != "" && a.Port.Hi != 0:
+		parts = append(parts, a.Proto+" dport "+portText(a.Port))
+	case a.Proto != "":
+		parts = append(parts, "meta l4proto "+a.Proto)
+	case a.Port.Hi != 0:
+		parts = append(parts, "meta l4proto { tcp, udp } th dport "+portText(a.Port))
 	}
 	if a.Verdict == policy.Allow {
 		parts = append(parts, "accept")

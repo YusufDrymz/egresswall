@@ -44,10 +44,10 @@ func TestBuildExpansion(t *testing.T) {
 	if len(p.Sets) != 2 || p.Sets[0].Name != "r2_v4" || p.Sets[1].Name != "r2_v6" || p.Sets[0].Rule != 2 {
 		t.Fatalf("sets: %+v", p.Sets)
 	}
-	// deny metadata (1) + dns (1) + registries: port without proto is tcp and
-	// udp, times v4/v6 (4) + internal v4+v6 (2) + wide: 2 ranges x tcp/udp (4)
-	if len(p.Atoms) != 12 {
-		t.Fatalf("want 12 atoms, got %d: %+v", len(p.Atoms), p.Atoms)
+	// deny metadata (1) + dns (1) + registries v4/v6 (2) + internal v4+v6 (2)
+	// + wide: 2 port ranges (2)
+	if len(p.Atoms) != 8 {
+		t.Fatalf("want 8 atoms, got %d: %+v", len(p.Atoms), p.Atoms)
 	}
 	first := p.Atoms[0]
 	if first.Verdict != policy.Deny || first.Family != V4 || first.Prefix != netip.MustParsePrefix("169.254.169.254/32") || first.Proto != "" {
@@ -56,18 +56,14 @@ func TestBuildExpansion(t *testing.T) {
 	if a := p.Atoms[1]; a.Family != AnyFamily || a.Proto != "udp" || a.Port != (policy.PortRange{Lo: 53, Hi: 53}) {
 		t.Fatalf("dns atom: %+v", a)
 	}
-	if a := p.Atoms[4]; a.Family != V6 || a.Set != "r2_v6" || a.Proto != "tcp" {
-		t.Fatalf("registries v6 atom: %+v", a)
+	if a := p.Atoms[3]; a.Family != V6 || a.Set != "r2_v6" || a.Proto != "" || a.Port.Lo != 443 {
+		t.Fatalf("registries v6 atom keeps proto open: %+v", a)
 	}
-	if a := p.Atoms[7]; a.Family != V6 || a.Prefix != netip.MustParsePrefix("fd00::/8") {
+	if a := p.Atoms[5]; a.Family != V6 || a.Prefix != netip.MustParsePrefix("fd00::/8") {
 		t.Fatalf("internal v6 atom: %+v", a)
 	}
-	protos := map[string]int{}
-	for _, a := range p.Atoms[8:] {
-		protos[a.Proto]++
-	}
-	if protos["tcp"] != 2 || protos["udp"] != 2 {
-		t.Fatalf("port without proto must expand to tcp and udp: %v", protos)
+	if a := p.Atoms[6]; a.Proto != "" || a.Port != (policy.PortRange{Lo: 8000, Hi: 8100}) {
+		t.Fatalf("wide: %+v", a)
 	}
 }
 
@@ -82,12 +78,12 @@ func TestText(t *testing.T) {
 		"ct state established,related accept",
 		`ip daddr 169.254.169.254 log prefix "egresswall deny[no-metadata]: " reject with icmpx type admin-prohibited`,
 		"udp dport 53 accept",
-		"ip daddr @r2_v4 tcp dport 443 accept",
-		"ip6 daddr @r2_v6 tcp dport 443 accept",
+		"ip daddr @r2_v4 meta l4proto { tcp, udp } th dport 443 accept",
+		"ip6 daddr @r2_v6 meta l4proto { tcp, udp } th dport 443 accept",
 		"ip daddr 10.0.0.0/8 accept",
 		"ip6 daddr fd00::/8 accept",
-		"tcp dport 8000-8100 accept",
-		"udp dport 9000 accept",
+		"meta l4proto { tcp, udp } th dport 8000-8100 accept",
+		"meta l4proto { tcp, udp } th dport 9000 accept",
 		`log prefix "egresswall default-deny: " reject with icmpx type admin-prohibited`,
 	} {
 		if !strings.Contains(out, want) {
@@ -97,6 +93,35 @@ func TestText(t *testing.T) {
 	// the deny rule must precede every accept
 	if strings.Index(out, "deny[no-metadata]") > strings.Index(out, "udp dport 53 accept") {
 		t.Fatal("deny rules must come before allow rules")
+	}
+}
+
+func TestTextForward(t *testing.T) {
+	p := build(t, sample)
+	if strings.Contains(p.Text(), "hook forward") {
+		t.Fatal("forward chain is opt-in")
+	}
+	p.Forward = true
+	out := p.Text()
+	i := strings.Index(out, "chain forward {")
+	if i < 0 {
+		t.Fatalf("no forward chain:\n%s", out)
+	}
+	fwd := out[i:]
+	for _, want := range []string{
+		"type filter hook forward priority filter; policy drop;",
+		`oifname "docker*" accept`,
+		`oifname "br-*" accept`,
+		"ct state established,related accept",
+		"ip daddr @r2_v4 meta l4proto { tcp, udp } th dport 443 accept",
+		`log prefix "egresswall default-deny: "`,
+	} {
+		if !strings.Contains(fwd, want) {
+			t.Fatalf("forward chain missing %q:\n%s", want, fwd)
+		}
+	}
+	if strings.Contains(fwd, `oif "lo"`) {
+		t.Fatal("loopback rule makes no sense on the forward hook")
 	}
 }
 

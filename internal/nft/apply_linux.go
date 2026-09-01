@@ -21,6 +21,7 @@ type Handle struct {
 	conn  *nftables.Conn
 	table *nftables.Table
 	sets  map[string]*nftables.Set
+	anon  int // counter for anonymous set names, nft wants them unique per batch
 }
 
 // Apply replaces any earlier egresswall table with this plan, atomically:
@@ -56,7 +57,7 @@ func Apply(p *Plan) (*Handle, error) {
 	if p.DefaultDeny {
 		chainPolicy = nftables.ChainPolicyDrop
 	}
-	chain := conn.AddChain(&nftables.Chain{
+	output := conn.AddChain(&nftables.Chain{
 		Name:     ChainName,
 		Table:    table,
 		Type:     nftables.ChainTypeFilter,
@@ -64,26 +65,83 @@ func Apply(p *Plan) (*Handle, error) {
 		Priority: nftables.ChainPriorityFilter,
 		Policy:   &chainPolicy,
 	})
-
-	add := func(exprs []expr.Any) {
-		conn.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: exprs})
+	h.rule(output, loopbackAccept())
+	if err := h.chainBody(output, p); err != nil {
+		return nil, err
 	}
-	add(loopbackAccept())
-	add(establishedAccept())
-	for _, a := range p.Atoms {
-		exprs, err := h.atomExprs(a)
-		if err != nil {
+
+	if p.Forward {
+		forward := conn.AddChain(&nftables.Chain{
+			Name:     ForwardChain,
+			Table:    table,
+			Type:     nftables.ChainTypeFilter,
+			Hooknum:  nftables.ChainHookForward,
+			Priority: nftables.ChainPriorityFilter,
+			Policy:   &chainPolicy,
+		})
+		for _, pfx := range bridgePrefixes {
+			h.rule(forward, oifPrefixAccept(pfx))
+		}
+		if err := h.chainBody(forward, p); err != nil {
 			return nil, err
 		}
-		add(exprs)
 	}
-	if p.DefaultDeny {
-		add(refuse(""))
-	}
+
 	if err := conn.Flush(); err != nil {
 		return nil, fmt.Errorf("nft: loading ruleset: %w", err)
 	}
 	return h, nil
+}
+
+func (h *Handle) rule(c *nftables.Chain, exprs []expr.Any) {
+	h.conn.AddRule(&nftables.Rule{Table: h.table, Chain: c, Exprs: exprs})
+}
+
+func (h *Handle) chainBody(c *nftables.Chain, p *Plan) error {
+	h.rule(c, establishedAccept())
+	for _, a := range p.Atoms {
+		exprs, err := h.atomExprs(a)
+		if err != nil {
+			return err
+		}
+		h.rule(c, exprs)
+	}
+	if p.DefaultDeny {
+		h.rule(c, refuse(""))
+	}
+	return nil
+}
+
+// oifPrefixAccept matches interface names starting with pfx: the kernel
+// compares only as many bytes as the cmp carries, which is how nft itself
+// implements "docker*".
+func oifPrefixAccept(pfx string) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte(pfx)},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+}
+
+// tcpOrUDP builds an anonymous set {tcp, udp} for a port rule that named no
+// protocol, and returns the lookup against it.
+func (h *Handle) tcpOrUDP() ([]expr.Any, error) {
+	h.anon++
+	s := &nftables.Set{
+		Table:     h.table,
+		Name:      fmt.Sprintf("__set%d", h.anon),
+		Anonymous: true,
+		Constant:  true,
+		KeyType:   nftables.TypeInetProto,
+	}
+	elems := []nftables.SetElement{{Key: []byte{unix.IPPROTO_TCP}}, {Key: []byte{unix.IPPROTO_UDP}}}
+	if err := h.conn.AddSet(s, elems); err != nil {
+		return nil, fmt.Errorf("nft: proto set: %w", err)
+	}
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Lookup{SourceRegister: 1, SetName: s.Name, SetID: s.ID},
+	}, nil
 }
 
 // AddAddr puts an address into a set for ttl. Called for every DNS answer
@@ -204,7 +262,8 @@ func (h *Handle) atomExprs(a Atom) ([]expr.Any, error) {
 		}
 		e = append(e, daddrLoad(a.Family), &expr.Lookup{SourceRegister: 1, SetName: s.Name, SetID: s.ID})
 	}
-	if a.Proto != "" {
+	switch {
+	case a.Proto != "":
 		l4 := byte(unix.IPPROTO_TCP)
 		if a.Proto == "udp" {
 			l4 = unix.IPPROTO_UDP
@@ -213,6 +272,14 @@ func (h *Handle) atomExprs(a Atom) ([]expr.Any, error) {
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{l4}},
 		)
+	case a.Port.Hi != 0:
+		lookup, err := h.tcpOrUDP()
+		if err != nil {
+			return nil, err
+		}
+		e = append(e, lookup...)
+	}
+	{
 		if a.Port.Hi != 0 {
 			// destination port sits at the same offset in tcp and udp
 			e = append(e, &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2})
