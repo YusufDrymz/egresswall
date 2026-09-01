@@ -28,7 +28,7 @@ func main() {
 	case "learn":
 		err = runLearn(os.Args[2:])
 	case "enforce":
-		err = notYet(os.Args[1])
+		err = runEnforce(os.Args[2:])
 	case "version":
 		fmt.Println("egresswall", version)
 	case "-h", "--help", "help":
@@ -50,14 +50,10 @@ func usage() {
   check     ask the policy about one destination, e.g. check registry.npmjs.org:443
   validate  parse a policy file and report every problem in it
   learn     watch outbound traffic and write a policy (linux, root)
-  enforce   apply a policy with nftables (linux, not implemented yet)
+  enforce   load the policy into nftables and keep its address sets fed (linux, root)
   version
 
 `)
-}
-
-func notYet(cmd string) error {
-	return fmt.Errorf("%s is not implemented yet; the policy engine is, see 'egresswall check'", cmd)
 }
 
 func runValidate(args []string) error {
