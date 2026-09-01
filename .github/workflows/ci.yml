@@ -48,3 +48,45 @@ jobs:
           ./egresswall check -policy learned.yaml neverssl.com:80
           if ./egresswall check -policy learned.yaml neverssl.com:443; then echo "port 443 was never used"; exit 1; fi
           if ./egresswall check -policy learned.yaml evil.example:443; then echo "unknown host must be denied"; exit 1; fi
+
+  # enforce for real: load a policy that allows example.com and the runner's
+  # own endpoints, see one request pass and two get refused, then stop and
+  # confirm the table is gone.
+  enforce-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go build -o egresswall ./cmd/egresswall
+      - name: policy for this runner
+        run: |
+          cat > policy.yaml <<'EOF2'
+          version: 1
+          default: deny
+          allow:
+            - name: dns
+              ports: ["53"]
+              proto: udp
+            - name: example
+              domains: ["example.com"]
+              ports: ["443"]
+            - name: runner
+              domains: ["*.github.com", "github.com", "*.githubusercontent.com", "*.blob.core.windows.net"]
+              ports: ["443"]
+          EOF2
+          ./egresswall enforce -policy policy.yaml -print
+      - name: enforce while curling
+        run: |
+          sudo ./egresswall enforce -policy policy.yaml -verbose 2>enforce.log &
+          sleep 3
+          sudo nft list ruleset
+          curl -sS --connect-timeout 5 -o /dev/null -w "example.com: %{http_code}\n" https://example.com
+          if curl -sS --connect-timeout 5 -o /dev/null http://neverssl.com; then echo "neverssl should have been refused"; exit 1; fi
+          if curl -sS --connect-timeout 5 -o /dev/null https://1.1.1.1; then echo "raw ip should have been refused"; exit 1; fi
+          sudo kill -INT %1
+          wait
+          echo "--- daemon log ---"; cat enforce.log
+          grep -q "refused .*neverssl.com" enforce.log || (echo "refusal was not reported with its name"; exit 1)
+          if sudo nft list tables | grep -q egresswall; then echo "table left behind"; exit 1; fi

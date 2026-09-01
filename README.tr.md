@@ -9,9 +9,9 @@ sunucuları için önce öğrenen sonra uygulayan bir giden-trafik firewall'udur
 yerine domain ve port olarak yazsın. `enforce` moduna geçin, listede olmayan her
 şey düşürülsün ve loglansın; çalınmış bir token'ın ilk dışarı çıkışı dahil.
 
-> **Durum: erken.** `learn` ve `check` çalışıyor (Linux, `learn` için root;
-> policy motoru her yerde). Sırada `enforce` var. Henüz hiçbir yerde
-> production'da değil.
+> **Durum: erken.** `learn`, `check` ve `enforce` çalışıyor; üçü de CI'da
+> gerçek bir Linux runner'da uçtan uca deneniyor. Henüz hiçbir yerde
+> production'da değil, süreç bazlı kurallar yol haritasında.
 
 ## Neden
 
@@ -32,7 +32,7 @@ boşluk için.
 ```
 $ sudo egresswall learn -out egresswall.yaml       # bir gün izle
 $ egresswall check registry.npmjs.org:443          # policy'ye sor, offline
-$ sudo egresswall enforce -policy egresswall.yaml  # gerisini düşür, logla (yakında)
+$ sudo egresswall enforce -policy egresswall.yaml  # gerisini reddet, logla
 ```
 
 `learn` her arayüzde tek bir raw socket (AF_PACKET, cooked mod) açar ve iki şey
@@ -50,6 +50,33 @@ yok, kernel modülü yok. Örnek çıktı için İngilizce README.
   kuralı olsa da `169.254.169.254` metadata servisi kapalı kalır.
 - **Tek binary, ajan yok, bulut yok.** Policy deployment'ın yanında commit'lenen
   bir YAML dosyası. Retler isim, IP, port ve kural adıyla loga düşer.
+
+### enforce
+
+`enforce` tek bir nftables tablosu (`inet egresswall`) yükler: bir output
+chain, her domain kuralı ve adres ailesi için bir timeout'lu set. `learn`'deki
+raw socket açık kalır; bir kuralın kapsadığı isim için gelen her DNS cevabı,
+adresleri o kuralın set'ine TTL süresince (en az beş dakika) yazar. Başlangıçta
+policy'deki tam isimler bir kez çözülür ki adresi önbelleğinde tutan süreçler
+reddedilmesin; wildcard'lar seed edilemez.
+
+Reddedilen paket sessizce düşürülmez, ICMP "administratively prohibited" ile
+reddedilir: süreç timeout beklemek yerine milisaniyeler içinde net bir hatayla
+düşer. Her ret kernel log'una hangi kuralın sebep olduğuyla düşer; daemon bunu
+`/dev/kmsg`'den okuyup DNS ismiyle ekrana yazar.
+
+Bilinmesi gerekenler:
+
+- `-dry-run` hiçbir şeye dokunmaz, sadece neyin reddedileceğini yazar. Önce
+  onu çalıştırın.
+- `-print` policy'nin dönüştüğü nft ruleset'ini gösterir. Okuyun.
+- Daemon temiz durdurulunca tablo kaldırılır; DNS beslemesi olmayan bir
+  firewall dakikalar içinde her şeyi reddederdi. Daemon çökerse tablo kalır
+  ve reddetmeye devam eder; `enforce -off` kaldırır.
+- Gelen trafiğe dokunulmaz, SSH oturumları yaşar; kurulu bağlantılar
+  kontrolsüz kabul edilir.
+- Sadece host'un kendi output chain'i filtrelenir; container trafiği forward
+  yolundan geçer ve henüz kapsanmıyor.
 
 ## Policy
 
@@ -79,8 +106,7 @@ allow  registry.npmjs.org:443  domain registry.npmjs.org  (rule package-registri
 
 ## Yol haritası
 
-- `enforce`: egresswall'a ait nftables tablosu, TTL'li DNS güdümlü IP set'leri,
-  retler için nflog, düşürmeden sadece loglayan dry-run.
+- Docker: forward yolunu da filtrele, host'taki container'lar aynı policy'yi alsın.
 - Süreç / cgroup bazlı kurallar.
 - Alarm hedefleri: önce journald, sonra webhook.
 

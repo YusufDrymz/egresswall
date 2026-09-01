@@ -12,9 +12,9 @@ dropped and logged, including the first outbound call of a stolen token.
 [![CI](https://github.com/YusufDrymz/egresswall/actions/workflows/ci.yml/badge.svg)](https://github.com/YusufDrymz/egresswall/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Status: early.** `learn` and `check` work (Linux, root for `learn`; the
-> policy engine runs anywhere). `enforce` is next. Nothing here is running in
-> production yet.
+> **Status: early.** `learn`, `check` and `enforce` all work and are exercised
+> end to end in CI on a real Linux runner. Nothing here is running in
+> production yet, and the per-process rules on the roadmap are not there.
 
 ## Why
 
@@ -35,7 +35,7 @@ whole project.
 ```
 $ sudo egresswall learn -out egresswall.yaml       # watch for a day
 $ egresswall check registry.npmjs.org:443          # ask the policy, offline
-$ sudo egresswall enforce -policy egresswall.yaml  # drop the rest, log it (soon)
+$ sudo egresswall enforce -policy egresswall.yaml  # refuse the rest, log it
 ```
 
 Eight seconds of `learn` on a box that fetched two pages:
@@ -96,6 +96,45 @@ kernel module: if the box can run a Go binary as root it can learn.
   your deployment. Refusals go to the log with the name, the IP, the port and the
   rule, or the absence of one.
 
+### enforce
+
+```
+$ sudo egresswall enforce -policy policy.yaml -verbose
+egresswall: enforcing policy.yaml (5 rules, 2 address sets)
+allow  104.20.23.154 (example.com):443 tcp  domain example.com
+refused  93.184.216.34 (neverssl.com):80 tcp  default deny
+refused  1.1.1.1:443 tcp  default deny
+^C
+egresswall: table removed, host is unfiltered again
+```
+
+`enforce` loads one nftables table, `inet egresswall`, with an output chain
+and one timeout set per domain rule and address family. It keeps the same raw
+socket open as `learn`: every DNS answer for a name a rule covers puts the
+answered addresses into that rule's sets for the TTL (five minutes at least,
+because applications cache longer than resolvers say). At startup the exact
+names in the policy are resolved once so processes holding a cached address
+are not refused until they resolve again; wildcards cannot be seeded.
+
+Refused packets are rejected with an ICMP "administratively prohibited", not
+silently dropped, so the process fails in milliseconds with a clear error
+instead of hanging on a timeout. Each refusal is logged by the kernel with the
+rule that caused it, and the daemon reads those back from `/dev/kmsg` and prints
+them with the DNS name attached.
+
+Things worth knowing before running it on a box you care about:
+
+- `-dry-run` touches nothing and prints what the policy would have refused.
+  Run it first.
+- `-print` shows the exact nft ruleset the policy becomes. Read it.
+- Stopping the daemon cleanly removes the table: a firewall nobody is feeding
+  DNS answers to would refuse everything within minutes. If the daemon crashes,
+  the table stays and keeps refusing; `enforce -off` removes it.
+- Inbound is untouched. SSH sessions survive; established connections are
+  accepted without further checks.
+- Only the host's own output chain is filtered. Container traffic goes through
+  the forward path and is not covered yet.
+
 ## Policy
 
 ```yaml
@@ -155,8 +194,8 @@ Honest list, because an egress filter that oversells itself is worse than none:
 
 ## Roadmap
 
-- `enforce`: nftables table owned by egresswall, DNS-driven IP sets with TTL,
-  nflog for refusals, dry-run mode that logs without dropping.
+- Docker: filter the forward path too, so containers on the host get the
+  same policy.
 - Per-process and per-cgroup rules, so "only the app may reach the database"
   is expressible.
 - Alert sinks: journald first, then a webhook.
