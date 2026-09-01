@@ -1,0 +1,30 @@
+# Example policy for a typical build/app server. Deny rules win, then allow
+# rules in file order, then default.
+version: 1
+default: deny
+
+deny:
+  - name: cloud-metadata
+    comment: nothing on this box needs IMDS; a stolen token starts here
+    cidrs: ["169.254.169.254"]
+
+allow:
+  - name: dns
+    ports: ["53"]
+    proto: udp
+
+  - name: package-registries
+    domains:
+      - registry.npmjs.org
+      - "*.pypi.org"
+      - proxy.golang.org
+      - sum.golang.org
+    ports: ["443"]
+
+  - name: github
+    domains: ["github.com", "*.github.com", "*.githubusercontent.com"]
+    ports: ["443", "22"]
+
+  - name: internal
+    comment: private network, database and cache live here
+    cidrs: ["10.0.0.0/8"]
