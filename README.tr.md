@@ -75,8 +75,22 @@ Bilinmesi gerekenler:
   ve reddetmeye devam eder; `enforce -off` kaldırır.
 - Gelen trafiğe dokunulmaz, SSH oturumları yaşar; kurulu bağlantılar
   kontrolsüz kabul edilir.
-- Sadece host'un kendi output chain'i filtrelenir; container trafiği forward
-  yolundan geçer ve henüz kapsanmıyor.
+- Varsayılan olarak sadece host'un kendi output chain'i filtrelenir. `-forward`
+  forward hook'una da bir chain ekler: container'lar ve host'un yönlendirdiği
+  her şey aynı policy'yi alır; docker bridge içinde kalan trafiğe dokunulmaz.
+  Açmadan önce imajları çekin ya da registry'ye izin verin.
+
+### Servis olarak çalıştırma
+
+```
+$ sudo cp egresswall /usr/local/bin/
+$ sudo mkdir -p /etc/egresswall && sudo cp learned.yaml /etc/egresswall/policy.yaml
+$ sudo cp contrib/egresswall.service /etc/systemd/system/
+$ sudo systemctl daemon-reload && sudo systemctl enable --now egresswall
+```
+
+Unit daemon'u SIGINT ile durdurur (tablo kaldırılır) ve çökerse set'ler
+dolmadan yeniden başlatır.
 
 ## Policy
 
@@ -106,7 +120,6 @@ allow  registry.npmjs.org:443  domain registry.npmjs.org  (rule package-registri
 
 ## Yol haritası
 
-- Docker: forward yolunu da filtrele, host'taki container'lar aynı policy'yi alsın.
 - Süreç / cgroup bazlı kurallar.
 - Alarm hedefleri: önce journald, sonra webhook.
 

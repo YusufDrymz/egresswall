@@ -77,15 +77,20 @@ jobs:
               ports: ["443"]
           EOF2
           ./egresswall enforce -policy policy.yaml -print
+      - name: pull the container image before the wall goes up
+        run: docker pull -q curlimages/curl:latest
       - name: enforce while curling
         run: |
-          sudo ./egresswall enforce -policy policy.yaml -verbose 2>enforce.log &
+          sudo ./egresswall enforce -policy policy.yaml -forward -verbose 2>enforce.log &
           EW=$!
           sleep 3
           sudo nft list ruleset
           curl -sS --connect-timeout 10 -o /dev/null -w "example.com: %{http_code}\n" https://example.com
           if curl -sS --connect-timeout 5 -o /dev/null http://github.com; then echo "github.com:80 should have been refused"; exit 1; fi
           if curl -sS --connect-timeout 5 -o /dev/null https://1.1.1.1; then echo "raw ip should have been refused"; exit 1; fi
+          echo "--- from a container, through the forward chain ---"
+          docker run --rm curlimages/curl:latest -sS --connect-timeout 10 -o /dev/null -w "container -> example.com: %{http_code}\n" https://example.com
+          if docker run --rm curlimages/curl:latest -sS --connect-timeout 5 -o /dev/null http://github.com; then echo "container -> github.com:80 should have been refused"; exit 1; fi
           sleep 1
           sudo kill -INT $EW
           wait $EW || true

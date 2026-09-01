@@ -132,8 +132,23 @@ Things worth knowing before running it on a box you care about:
   the table stays and keeps refusing; `enforce -off` removes it.
 - Inbound is untouched. SSH sessions survive; established connections are
   accepted without further checks.
-- Only the host's own output chain is filtered. Container traffic goes through
-  the forward path and is not covered yet.
+- By default only the host's own output chain is filtered. `-forward` adds a
+  chain on the forward hook so containers, and anything else this host routes,
+  get the same policy; traffic that stays on a docker bridge is left alone.
+  Pull your images before turning it on, or allow the registry.
+
+### Running it as a service
+
+```
+$ sudo cp egresswall /usr/local/bin/
+$ sudo mkdir -p /etc/egresswall && sudo cp learned.yaml /etc/egresswall/policy.yaml
+$ sudo cp contrib/egresswall.service /etc/systemd/system/
+$ sudo systemctl daemon-reload && sudo systemctl enable --now egresswall
+$ journalctl -u egresswall -f
+```
+
+The unit stops the daemon with SIGINT, which removes the table, and restarts
+it after a crash so the address sets get fed again before they expire.
 
 ## Policy
 
@@ -194,8 +209,6 @@ Honest list, because an egress filter that oversells itself is worse than none:
 
 ## Roadmap
 
-- Docker: filter the forward path too, so containers on the host get the
-  same policy.
 - Per-process and per-cgroup rules, so "only the app may reach the database"
   is expressible.
 - Alert sinks: journald first, then a webhook.
