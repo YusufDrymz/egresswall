@@ -12,9 +12,9 @@ dropped and logged, including the first outbound call of a stolen token.
 [![CI](https://github.com/YusufDrymz/egresswall/actions/workflows/ci.yml/badge.svg)](https://github.com/YusufDrymz/egresswall/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Status: early.** `learn`, `check` and `enforce` all work and are exercised
-> end to end in CI on a real Linux runner. Nothing here is running in
-> production yet, and the per-process rules on the roadmap are not there.
+> **Status: early.** `learn`, `check` and `enforce` all work, including rules
+> scoped to a service's cgroup, and are exercised end to end in CI on a real
+> Linux runner. Nothing here is running in production yet.
 
 ## Why
 
@@ -132,6 +132,11 @@ Things worth knowing before running it on a box you care about:
   the table stays and keeps refusing; `enforce -off` removes it.
 - Inbound is untouched. SSH sessions survive; established connections are
   accepted without further checks.
+- cgroup rules use `socket cgroupv2`, so they need cgroup v2 and a kernel of
+  5.13 or later, and they only apply to the host's own processes: forwarded
+  traffic has no socket. A cgroup that does not exist yet, because its service
+  is not running, is reported and its rules stay inactive; the daemon checks
+  every few seconds and reloads the table when it appears.
 - Always allowed, before the policy: loopback, IPv6 link-local and multicast
   (neighbour discovery, MLD) and IPv4 multicast (IGMP). Refusing those breaks
   the host's own networking and none of it leaves the link. Plain ICMP is not
@@ -176,7 +181,20 @@ allow:
 ```
 
 A rule matches when the destination hits one of its domains **or** one of its
-CIDRs, and the port and protocol fit. A rule with neither domains nor CIDRs
+CIDRs, and the port and protocol fit. A rule with a `cgroup` only matches
+sockets opened from that cgroup v2 path or anything below it, so "only the app
+may reach the database" is one rule:
+
+```yaml
+  - name: app-db
+    cidrs: ["10.0.0.5"]
+    ports: ["5432"]
+    cgroup: system.slice/app.service
+```
+
+`learn` tells you where to draw those lines: every rule it writes says which
+cgroups the connections came from, busiest first, e.g.
+`from system.slice/app.service (412), system.slice/cron.service (3)`. A rule with neither domains nor CIDRs
 matches any host, which is how you allow DNS to wherever the resolver is.
 `*.example.com` matches subdomains only; write `example.com` too if you mean the
 apex. Unknown keys in the file are an error, not a silent no-op.
@@ -213,9 +231,8 @@ Honest list, because an egress filter that oversells itself is worse than none:
 
 ## Roadmap
 
-- Per-process and per-cgroup rules, so "only the app may reach the database"
-  is expressible.
 - Alert sinks: journald first, then a webhook.
+- Batching set updates under heavy DNS load.
 
 ## License
 

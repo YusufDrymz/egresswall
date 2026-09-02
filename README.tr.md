@@ -9,9 +9,9 @@ sunucuları için önce öğrenen sonra uygulayan bir giden-trafik firewall'udur
 yerine domain ve port olarak yazsın. `enforce` moduna geçin, listede olmayan her
 şey düşürülsün ve loglansın; çalınmış bir token'ın ilk dışarı çıkışı dahil.
 
-> **Durum: erken.** `learn`, `check` ve `enforce` çalışıyor; üçü de CI'da
-> gerçek bir Linux runner'da uçtan uca deneniyor. Henüz hiçbir yerde
-> production'da değil, süreç bazlı kurallar yol haritasında.
+> **Durum: erken.** `learn`, `check` ve `enforce` çalışıyor, servisin
+> cgroup'una bağlı kurallar dahil; üçü de CI'da gerçek bir Linux runner'da
+> uçtan uca deneniyor. Henüz hiçbir yerde production'da değil.
 
 ## Neden
 
@@ -75,6 +75,11 @@ Bilinmesi gerekenler:
   ve reddetmeye devam eder; `enforce -off` kaldırır.
 - Gelen trafiğe dokunulmaz, SSH oturumları yaşar; kurulu bağlantılar
   kontrolsüz kabul edilir.
+- cgroup kuralları `socket cgroupv2` kullanır: cgroup v2 ve 5.13+ kernel ister,
+  sadece host'un kendi süreçlerine uygulanır (forward edilen trafiğin socket'i
+  yok). Servisi çalışmadığı için henüz var olmayan cgroup raporlanır, kuralı
+  pasif kalır; daemon birkaç saniyede bir bakar, cgroup gelince tabloyu
+  yeniden yükler.
 - Policy'den önce her zaman izinli: loopback, IPv6 link-local ve multicast
   (neighbour discovery, MLD), IPv4 multicast (IGMP). Bunları reddetmek host'un
   kendi ağını bozar ve hiçbiri link'in dışına çıkmaz. Düz ICMP henüz policy
@@ -105,6 +110,20 @@ uyar; DNS'i resolver neredeyse oraya açmanın yolu bu. `*.example.com` sadece a
 alanları kapsar, apex'i kastediyorsanız `example.com`'u da yazın. Dosyadaki
 bilinmeyen anahtar hata, sessiz geçilmez.
 
+`cgroup` alanı olan kural sadece o cgroup v2 yolundan (ya da altından) açılan
+socket'lere uyar; "veritabanına sadece uygulama ulaşsın" tek kural:
+
+```yaml
+  - name: app-db
+    cidrs: ["10.0.0.5"]
+    ports: ["5432"]
+    cgroup: system.slice/app.service
+```
+
+`learn` yazdığı her kuralda bağlantıların hangi cgroup'lardan geldiğini
+yoğunluk sırasıyla söyler (`from system.slice/app.service (412), ...`); çizgiyi
+nereden çekeceğinizi oradan görürsünüz.
+
 ```
 $ egresswall check -policy examples/egresswall.yaml registry.npmjs.org:443
 allow  registry.npmjs.org:443  domain registry.npmjs.org  (rule package-registries)
@@ -124,8 +143,8 @@ allow  registry.npmjs.org:443  domain registry.npmjs.org  (rule package-registri
 
 ## Yol haritası
 
-- Süreç / cgroup bazlı kurallar.
 - Alarm hedefleri: önce journald, sonra webhook.
+- Yoğun DNS'te set yazımlarını batch'leme.
 
 ## Lisans
 

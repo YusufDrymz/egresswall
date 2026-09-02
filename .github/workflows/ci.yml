@@ -69,9 +69,10 @@ jobs:
             - name: dns
               ports: ["53"]
               proto: udp
-            - name: example
+            - name: example-only-from-ewtest
               domains: ["example.com"]
               ports: ["443"]
+              cgroup: ewtest
             - name: runner
               domains: ["*.github.com", "github.com", "*.githubusercontent.com", "*.blob.core.windows.net"]
               ports: ["443"]
@@ -81,15 +82,25 @@ jobs:
         run: docker pull -q curlimages/curl:latest
       - name: enforce while curling
         run: |
+          sudo rmdir /sys/fs/cgroup/ewtest 2>/dev/null || true
           sudo ./egresswall enforce -policy policy.yaml -forward -verbose 2>enforce.log &
           EW=$!
           sleep 3
           sudo nft list ruleset
-          curl -sS --connect-timeout 10 -o /dev/null -w "example.com: %{http_code}\n" https://example.com
+          grep -q "cgroup ewtest does not exist yet" enforce.log || (echo "missing cgroup should have been reported"; exit 1)
+          curl -sS --connect-timeout 10 -o /dev/null -w "github.com: %{http_code}\n" https://github.com
+          if curl -sS --connect-timeout 5 -o /dev/null https://example.com; then echo "example.com is only for cgroup ewtest, which does not exist yet"; exit 1; fi
           if curl -sS --connect-timeout 5 -o /dev/null http://github.com; then echo "github.com:80 should have been refused"; exit 1; fi
           if curl -sS --connect-timeout 5 -o /dev/null https://1.1.1.1; then echo "raw ip should have been refused"; exit 1; fi
+          echo "--- the cgroup appears, the table must reload within a few seconds ---"
+          sudo mkdir /sys/fs/cgroup/ewtest
+          sleep 8
+          grep -q "table reloaded" enforce.log || (echo "reload did not happen"; cat enforce.log; exit 1)
+          sudo nft list chain inet egresswall output | grep cgroupv2
+          sudo sh -c 'echo $$ > /sys/fs/cgroup/ewtest/cgroup.procs; curl -sS --connect-timeout 10 -o /dev/null -w "example.com from ewtest: %{http_code}\n" https://example.com'
+          if curl -sS --connect-timeout 5 -o /dev/null https://example.com; then echo "example.com from outside ewtest should still be refused"; exit 1; fi
           echo "--- from a container, through the forward chain ---"
-          docker run --rm curlimages/curl:latest -sS --connect-timeout 10 -o /dev/null -w "container -> example.com: %{http_code}\n" https://example.com
+          docker run --rm curlimages/curl:latest -sS --connect-timeout 10 -o /dev/null -w "container -> github.com: %{http_code}\n" https://github.com
           if docker run --rm curlimages/curl:latest -sS --connect-timeout 5 -o /dev/null http://github.com; then echo "container -> github.com:80 should have been refused"; exit 1; fi
           sleep 1
           sudo kill -INT $EW
@@ -97,3 +108,4 @@ jobs:
           echo "--- daemon log ---"; cat enforce.log
           grep -q "refused .*github.com):80" enforce.log || (echo "refusal was not reported with its name"; exit 1)
           if sudo nft list tables | grep -q egresswall; then echo "table left behind"; exit 1; fi
+          sudo rmdir /sys/fs/cgroup/ewtest || true
