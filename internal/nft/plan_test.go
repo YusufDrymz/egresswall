@@ -171,6 +171,14 @@ allow:
 	if CgroupLevel("a") != 1 || CgroupLevel("a/b/c") != 3 {
 		t.Fatal("level")
 	}
+	p.Forward = true
+	fwd := p.Text()[strings.Index(p.Text(), "chain forward {"):]
+	if strings.Contains(fwd, "cgroupv2") {
+		t.Fatalf("the kernel refuses socket matches on the forward hook:\n%s", fwd)
+	}
+	if !strings.Contains(fwd, "default-deny") {
+		t.Fatal("forward chain still needs its default")
+	}
 }
 
 func TestSetFor(t *testing.T) {

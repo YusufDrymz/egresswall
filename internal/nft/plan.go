@@ -163,24 +163,33 @@ func (p *Plan) Text() string {
 	}
 	fmt.Fprintf(&b, "\tchain %s {\n\t\ttype filter hook output priority filter; policy %s;\n", ChainName, policyWord)
 	b.WriteString("\t\toif \"lo\" accept\n")
-	p.chainBody(&b)
+	p.chainBody(&b, false)
 	if p.Forward {
 		fmt.Fprintf(&b, "\tchain %s {\n\t\ttype filter hook forward priority filter; policy %s;\n", ForwardChain, policyWord)
 		for _, pfx := range bridgePrefixes {
 			fmt.Fprintf(&b, "\t\toifname %q accept\n", pfx+"*")
 		}
-		p.chainBody(&b)
+		p.chainBody(&b, true)
 	}
 	b.WriteString("}\n")
 	return b.String()
 }
 
-func (p *Plan) chainBody(b *strings.Builder) {
+// forwarded packets have no local socket, so cgroup atoms cannot match
+// there and the kernel refuses `socket` on the forward hook outright.
+func (a Atom) inChain(forward bool) bool {
+	return !(forward && a.Cgroup != "")
+}
+
+func (p *Plan) chainBody(b *strings.Builder, forward bool) {
 	b.WriteString("\t\tct state established,related accept\n")
 	for _, pfx := range housekeeping {
 		fmt.Fprintf(b, "\t\t%s daddr %s accept\n", familyWord(familyOf(pfx)), pfx)
 	}
 	for _, a := range p.Atoms {
+		if !a.inChain(forward) {
+			continue
+		}
 		b.WriteString("\t\t")
 		b.WriteString(a.text())
 		b.WriteByte('\n')

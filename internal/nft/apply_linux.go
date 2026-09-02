@@ -110,7 +110,7 @@ func Apply(p *Plan) (*Handle, error) {
 		Policy:   &chainPolicy,
 	})
 	h.rule(output, loopbackAccept())
-	if err := h.chainBody(output, p); err != nil {
+	if err := h.chainBody(output, p, false); err != nil {
 		return nil, err
 	}
 
@@ -126,7 +126,7 @@ func Apply(p *Plan) (*Handle, error) {
 		for _, pfx := range bridgePrefixes {
 			h.rule(forward, oifPrefixAccept(pfx))
 		}
-		if err := h.chainBody(forward, p); err != nil {
+		if err := h.chainBody(forward, p, true); err != nil {
 			return nil, err
 		}
 	}
@@ -141,7 +141,7 @@ func (h *Handle) rule(c *nftables.Chain, exprs []expr.Any) {
 	h.conn.AddRule(&nftables.Rule{Table: h.table, Chain: c, Exprs: exprs})
 }
 
-func (h *Handle) chainBody(c *nftables.Chain, p *Plan) error {
+func (h *Handle) chainBody(c *nftables.Chain, p *Plan, forward bool) error {
 	h.rule(c, establishedAccept())
 	for _, pfx := range housekeeping {
 		exprs, err := h.atomExprs(Atom{Family: familyOf(pfx), Prefix: pfx, Verdict: policy.Allow})
@@ -151,6 +151,9 @@ func (h *Handle) chainBody(c *nftables.Chain, p *Plan) error {
 		h.rule(c, exprs)
 	}
 	for _, a := range p.Atoms {
+		if !a.inChain(forward) {
+			continue
+		}
 		exprs, err := h.atomExprs(a)
 		if errors.Is(err, errCgroupMissing) {
 			h.missing[a.Cgroup] = true
