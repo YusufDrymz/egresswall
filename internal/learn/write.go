@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ func WritePolicy(w io.Writer, entries []Entry, started, now time.Time) error {
 		first  time.Time
 		last   time.Time
 		hits   int
+		from   map[string]int
 	}
 	var rules []*rule
 	byHost := map[string]*rule{}
@@ -38,13 +40,16 @@ func WritePolicy(w io.Writer, entries []Entry, started, now time.Time) error {
 		}
 		r, ok := byHost[e.Host]
 		if !ok {
-			r = &rule{host: e.Host, domain: e.Domain, protos: map[string]bool{}, first: e.First}
+			r = &rule{host: e.Host, domain: e.Domain, protos: map[string]bool{}, first: e.First, from: map[string]int{}}
 			byHost[e.Host] = r
 			rules = append(rules, r)
 		}
 		r.ports = append(r.ports, e.Port)
 		r.protos[e.Proto] = true
 		r.hits += e.Hits
+		for cg, n := range e.Origins {
+			r.from[cg] += n
+		}
 		if e.First.Before(r.first) {
 			r.first = e.First
 		}
@@ -88,6 +93,9 @@ func WritePolicy(w io.Writer, entries []Entry, started, now time.Time) error {
 		if !r.domain {
 			comment = "no dns name seen for this address; " + comment
 		}
+		if from := originsText(r.from); from != "" {
+			comment += "; from " + from
+		}
 		fmt.Fprintf(&b, "    comment: %s\n", yamlString(comment))
 	}
 
@@ -96,6 +104,40 @@ func WritePolicy(w io.Writer, entries []Entry, started, now time.Time) error {
 	}
 	_, err := w.Write(b.Bytes())
 	return err
+}
+
+// originsText lists the cgroups a host was reached from, busiest first, so
+// the reader can decide whether the rule deserves a cgroup: line.
+func originsText(from map[string]int) string {
+	if len(from) == 0 {
+		return ""
+	}
+	type kv struct {
+		cg string
+		n  int
+	}
+	var list []kv
+	for cg, n := range from {
+		list = append(list, kv{cg, n})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].n != list[j].n {
+			return list[i].n > list[j].n
+		}
+		if (list[i].cg == "") != (list[j].cg == "") {
+			return list[j].cg == "" // the unknown bucket goes last
+		}
+		return list[i].cg < list[j].cg
+	})
+	var parts []string
+	for _, e := range list {
+		name := e.cg
+		if name == "" {
+			name = "unknown process"
+		}
+		parts = append(parts, fmt.Sprintf("%s (%d)", name, e.n))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func portList(ports []uint16) string {

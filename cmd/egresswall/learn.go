@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,11 +16,21 @@ import (
 	"github.com/YusufDrymz/egresswall/internal/dnswatch"
 	"github.com/YusufDrymz/egresswall/internal/learn"
 	"github.com/YusufDrymz/egresswall/internal/packet"
+	"github.com/YusufDrymz/egresswall/internal/procs"
 )
 
 // Applications hold on to resolved addresses far longer than the DNS TTL;
 // five minutes keeps most of their later connections attributable to a name.
 const learnMinTTL = 5 * time.Minute
+
+// ownerCgroup is the procs lookup in the shape the observer wants.
+func ownerCgroup(local netip.Addr, port uint16, proto string) string {
+	o, ok := procs.Lookup(local, port, proto)
+	if !ok {
+		return ""
+	}
+	return o.Cgroup
+}
 
 func runLearn(args []string) error {
 	fs := flag.NewFlagSet("learn", flag.ExitOnError)
@@ -44,9 +55,16 @@ func runLearn(args []string) error {
 
 	dns := dnswatch.New(learnMinTTL)
 	obs := learn.NewObserver(dns)
+	obs.Owner = ownerCgroup
 	if !*quiet {
 		obs.OnNew = func(e learn.Entry) {
-			fmt.Fprintf(os.Stderr, "new  %s:%d %s\n", e.Host, e.Port, e.Proto)
+			from := ""
+			for cg := range e.Origins {
+				if cg != "" {
+					from = "  from " + cg
+				}
+			}
+			fmt.Fprintf(os.Stderr, "new  %s:%d %s%s\n", e.Host, e.Port, e.Proto, from)
 		}
 	}
 	started := time.Now()

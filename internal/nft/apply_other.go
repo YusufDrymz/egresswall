@@ -18,3 +18,7 @@ func (h *Handle) AddAddr(string, netip.Addr, time.Duration) error { return errLi
 func (h *Handle) Close() error                                    { return nil }
 
 func Remove() (bool, error) { return false, errLinuxOnly }
+
+func (h *Handle) Missing() []string { return nil }
+
+func CgroupExists(string) bool { return false }

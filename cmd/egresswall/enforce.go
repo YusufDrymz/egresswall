@@ -81,6 +81,7 @@ func runEnforce(args []string) error {
 			}
 		}()
 		fmt.Fprintf(os.Stderr, "egresswall: enforcing %s (%d rules, %d address sets)\n", *path, len(plan.Atoms), len(plan.Sets))
+		warnMissing(handle.Missing())
 		seed(set, handle, dns)
 		go func() {
 			err := kmsg.Tail(ctx, func(ev kmsg.Event) {
@@ -110,6 +111,7 @@ func runEnforce(args []string) error {
 		if name, ok := dns.Lookup(p.Dst, now); ok {
 			d.Domain = name
 		}
+		d.Cgroup = ownerCgroup(p.Src, p.SrcPort, d.Proto)
 		key := fmt.Sprintf("%s:%d/%s", p.Dst, p.DstPort, d.Proto)
 		if last, ok := seen.Load(key); ok && now.Sub(last.(time.Time)) < 10*time.Second {
 			return
@@ -126,10 +128,15 @@ func runEnforce(args []string) error {
 				word = "would deny"
 			}
 		}
-		fmt.Fprintf(os.Stderr, "%s  %s  %s\n", word, destText(p.Dst.String(), d.Domain, p.DstPort, d.Proto), dec.Reason)
+		from := ""
+		if d.Cgroup != "" {
+			from = "  from " + d.Cgroup
+		}
+		fmt.Fprintf(os.Stderr, "%s  %s  %s%s\n", word, destText(p.Dst.String(), d.Domain, p.DstPort, d.Proto), dec.Reason, from)
 	}
 
 	lastSweep := time.Now()
+	lastCgroupCheck := lastSweep
 	for ctx.Err() == nil {
 		frame, outgoing, err := src.Read()
 		if errors.Is(err, capture.ErrTimeout) {
@@ -159,8 +166,39 @@ func runEnforce(args []string) error {
 			dns.Purge(now)
 			lastSweep = now
 		}
+		// a service that was not running when we loaded the table has no
+		// cgroup yet; once it appears, reload so its rules take effect
+		if handle != nil && now.Sub(lastCgroupCheck) > 5*time.Second {
+			lastCgroupCheck = now
+			if appeared(handle.Missing()) {
+				fresh, err := nft.Apply(plan)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "egresswall: reloading for new cgroups:", err)
+					continue
+				}
+				handle = fresh
+				fmt.Fprintln(os.Stderr, "egresswall: table reloaded, cgroup rules now active")
+				warnMissing(handle.Missing())
+				seed(set, handle, dns)
+			}
+		}
 	}
 	return nil
+}
+
+func warnMissing(missing []string) {
+	for _, cg := range missing {
+		fmt.Fprintf(os.Stderr, "egresswall: cgroup %s does not exist yet, its rules are inactive until it does\n", cg)
+	}
+}
+
+func appeared(missing []string) bool {
+	for _, cg := range missing {
+		if nft.CgroupExists(cg) {
+			return true
+		}
+	}
+	return false
 }
 
 // feed puts a DNS answer's addresses into the sets of every rule whose

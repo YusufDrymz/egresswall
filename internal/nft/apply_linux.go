@@ -4,8 +4,12 @@ package nft
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
+	"os"
+	"sort"
+	"syscall"
 	"time"
 
 	"github.com/google/nftables"
@@ -22,6 +26,46 @@ type Handle struct {
 	table *nftables.Table
 	sets  map[string]*nftables.Set
 	anon  int // counter for anonymous set names, nft wants them unique per batch
+	// cgroups named by rules that did not exist when the plan was loaded.
+	// Their atoms were left out; the caller should re-Apply once they show up.
+	missing map[string]bool
+}
+
+const cgroupRoot = "/sys/fs/cgroup"
+
+var errCgroupMissing = errors.New("cgroup does not exist")
+
+// cgroupID is what the kernel compares `socket cgroupv2` against: the inode
+// number of the cgroup directory.
+func cgroupID(path string) (uint64, error) {
+	st, err := os.Stat(cgroupRoot + "/" + path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, errCgroupMissing
+		}
+		return 0, err
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, fmt.Errorf("nft: no inode for %s", path)
+	}
+	return sys.Ino, nil
+}
+
+// CgroupExists reports whether a cgroup path is present under the v2 root.
+func CgroupExists(path string) bool {
+	_, err := os.Stat(cgroupRoot + "/" + path)
+	return err == nil
+}
+
+// Missing lists the cgroups whose rules could not be loaded, sorted.
+func (h *Handle) Missing() []string {
+	out := make([]string, 0, len(h.missing))
+	for cg := range h.missing {
+		out = append(out, cg)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Apply replaces any earlier egresswall table with this plan, atomically:
@@ -35,7 +79,7 @@ func Apply(p *Plan) (*Handle, error) {
 		return nil, err
 	}
 	table := conn.AddTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: TableName})
-	h := &Handle{conn: conn, table: table, sets: map[string]*nftables.Set{}}
+	h := &Handle{conn: conn, table: table, sets: map[string]*nftables.Set{}, missing: map[string]bool{}}
 
 	for _, def := range p.Sets {
 		s := &nftables.Set{
@@ -108,6 +152,10 @@ func (h *Handle) chainBody(c *nftables.Chain, p *Plan) error {
 	}
 	for _, a := range p.Atoms {
 		exprs, err := h.atomExprs(a)
+		if errors.Is(err, errCgroupMissing) {
+			h.missing[a.Cgroup] = true
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -236,6 +284,16 @@ func refuse(rule string) []expr.Any {
 
 func (h *Handle) atomExprs(a Atom) ([]expr.Any, error) {
 	var e []expr.Any
+	if a.Cgroup != "" {
+		id, err := cgroupID(a.Cgroup)
+		if err != nil {
+			return nil, err
+		}
+		e = append(e,
+			&expr.Socket{Key: expr.SocketKeyCgroupv2, Level: uint32(CgroupLevel(a.Cgroup)), Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint64(id)},
+		)
+	}
 	if a.Family != AnyFamily {
 		proto := byte(unix.NFPROTO_IPV4)
 		if a.Family == V6 {

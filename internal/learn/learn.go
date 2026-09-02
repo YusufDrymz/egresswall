@@ -24,6 +24,9 @@ type Entry struct {
 	Last   time.Time
 	Hits   int
 	IPs    []netip.Addr // addresses seen for a domain entry, for the comment
+	// Origins says which cgroups the flows came from, when Owner could tell.
+	// The empty cgroup collects flows nobody could be found for.
+	Origins map[string]int
 }
 
 type key struct {
@@ -46,10 +49,14 @@ type Observer struct {
 	// OnNew fires for each never-seen-before destination, from the feeding
 	// goroutine. Keep it quick.
 	OnNew func(Entry)
+	// Owner, when set, is asked for the cgroup behind a new flow's local
+	// address. It runs on the feeding goroutine too.
+	Owner func(local netip.Addr, port uint16, proto string) string
 
 	mu      sync.Mutex
 	entries map[key]*Entry
 	ips     map[key]map[netip.Addr]struct{}
+	origins map[key]map[string]int
 	// UDP has no SYN, so whoever sent the first packet of a (peer, peer
 	// port, our port) tuple is the initiator. Remember both directions for a
 	// minute: an outbound packet mirroring something we received is our
@@ -66,6 +73,7 @@ func NewObserver(dns *dnswatch.Cache) *Observer {
 		DNS:     dns,
 		entries: map[key]*Entry{},
 		ips:     map[key]map[netip.Addr]struct{}{},
+		origins: map[key]map[string]int{},
 		udpIn:   map[udpTuple]time.Time{},
 		udpOut:  map[udpTuple]time.Time{},
 	}
@@ -113,10 +121,14 @@ func (o *Observer) Packet(p packet.Packet, outgoing bool, now time.Time) {
 	default:
 		return
 	}
-	o.record(p.Dst.Unmap(), p.DstPort, proto, now)
+	origin := ""
+	if o.Owner != nil {
+		origin = o.Owner(p.Src, p.SrcPort, proto)
+	}
+	o.record(p.Dst.Unmap(), p.DstPort, proto, origin, now)
 }
 
-func (o *Observer) record(ip netip.Addr, port uint16, proto string, now time.Time) {
+func (o *Observer) record(ip netip.Addr, port uint16, proto, origin string, now time.Time) {
 	host, domain := ip.String(), false
 	if name, ok := o.DNS.Lookup(ip, now); ok {
 		host, domain = name, true
@@ -128,10 +140,12 @@ func (o *Observer) record(ip netip.Addr, port uint16, proto string, now time.Tim
 		e = &Entry{Host: host, Domain: domain, Port: port, Proto: proto, First: now}
 		o.entries[k] = e
 		o.ips[k] = map[netip.Addr]struct{}{}
+		o.origins[k] = map[string]int{}
 	}
 	e.Hits++
 	e.Last = now
 	o.ips[k][ip] = struct{}{}
+	o.origins[k][origin]++
 	snapshot := *e
 	o.mu.Unlock()
 	if !seen && o.OnNew != nil {
@@ -149,6 +163,10 @@ func (o *Observer) Entries() []Entry {
 			c.IPs = append(c.IPs, ip)
 		}
 		sort.Slice(c.IPs, func(i, j int) bool { return c.IPs[i].Less(c.IPs[j]) })
+		c.Origins = map[string]int{}
+		for cg, n := range o.origins[k] {
+			c.Origins[cg] = n
+		}
 		out = append(out, c)
 	}
 	o.mu.Unlock()

@@ -176,6 +176,43 @@ func TestWritePolicyRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOriginsInComment(t *testing.T) {
+	now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	o := NewObserver(dnswatch.New(0))
+	o.Owner = func(_ netip.Addr, port uint16, _ string) string {
+		switch port {
+		case 50000:
+			return "system.slice/app.service"
+		case 50001:
+			return "system.slice/cron.service"
+		}
+		return ""
+	}
+	o.Packet(dnsAnswer(t, "api.example", "192.0.2.10"), false, now)
+	for i := 0; i < 3; i++ {
+		o.Packet(tcpSyn("192.0.2.10", 443), true, now)
+	}
+	cron := tcpSyn("192.0.2.10", 443)
+	cron.SrcPort = 50001
+	o.Packet(cron, true, now)
+	nobody := tcpSyn("192.0.2.10", 443)
+	nobody.SrcPort = 60000
+	o.Packet(nobody, true, now)
+
+	e := o.Entries()
+	if len(e) != 1 || e[0].Origins["system.slice/app.service"] != 3 || e[0].Origins[""] != 1 {
+		t.Fatalf("%+v", e)
+	}
+	var buf bytes.Buffer
+	if err := WritePolicy(&buf, e, now, now); err != nil {
+		t.Fatal(err)
+	}
+	want := `from system.slice/app.service (3), system.slice/cron.service (1), unknown process (1)`
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("missing %q in:\n%s", want, buf.String())
+	}
+}
+
 func TestWritePolicyEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	now := time.Now()
