@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -129,7 +130,7 @@ func runEnforce(args []string) error {
 			}
 		}
 		from := ""
-		if d.Cgroup != "" {
+		if d.Cgroup != "" && !strings.HasSuffix(dec.Reason, " from "+d.Cgroup) {
 			from = "  from " + d.Cgroup
 		}
 		fmt.Fprintf(os.Stderr, "%s  %s  %s%s\n", word, destText(p.Dst.String(), d.Domain, p.DstPort, d.Proto), dec.Reason, from)
