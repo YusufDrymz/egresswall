@@ -35,6 +35,7 @@ type Atom struct {
 	Port    policy.PortRange
 	Prefix  netip.Prefix // valid when the atom matches a cidr
 	Set     string       // non-empty when the atom matches a set
+	Cgroup  string       // non-empty when only sockets from this cgroup match
 	Verdict policy.Verdict
 	Rule    string
 }
@@ -106,7 +107,7 @@ func Build(s *policy.Set) *Plan {
 			for _, proto := range protos {
 				for _, port := range ports {
 					a := base
-					a.Proto, a.Port, a.Verdict, a.Rule = proto, port, r.Verdict, r.Name
+					a.Proto, a.Port, a.Verdict, a.Rule, a.Cgroup = proto, port, r.Verdict, r.Name, r.Cgroup
 					p.Atoms = append(p.Atoms, a)
 				}
 			}
@@ -190,8 +191,17 @@ func (p *Plan) chainBody(b *strings.Builder) {
 	b.WriteString("\t}\n")
 }
 
+// CgroupLevel is the depth nftables needs alongside a cgroup path: the
+// number of components, so "system.slice/app.service" is level 2.
+func CgroupLevel(path string) int {
+	return strings.Count(path, "/") + 1
+}
+
 func (a Atom) text() string {
 	var parts []string
+	if a.Cgroup != "" {
+		parts = append(parts, fmt.Sprintf("socket cgroupv2 level %d %q", CgroupLevel(a.Cgroup), a.Cgroup))
+	}
 	switch {
 	case a.Prefix.IsValid():
 		parts = append(parts, familyWord(a.Family)+" daddr "+prefixText(a.Prefix))

@@ -170,6 +170,62 @@ func TestRulesAndDomainRules(t *testing.T) {
 	}
 }
 
+func TestCgroupRules(t *testing.T) {
+	s := mustParse(t, `
+version: 1
+default: deny
+allow:
+  - name: app-db
+    cidrs: ["10.0.0.5"]
+    ports: ["5432"]
+    cgroup: /system.slice/app.service/
+  - name: anyone-https
+    domains: ["example.com"]
+    ports: ["443"]
+`)
+	db := Dest{IP: addr("10.0.0.5"), Port: 5432}
+	cases := []struct {
+		name   string
+		cgroup string
+		want   Verdict
+	}{
+		{"exact cgroup", "system.slice/app.service", Allow},
+		{"child cgroup", "system.slice/app.service/worker-3", Allow},
+		{"leading slash from /proc", "/system.slice/app.service", Allow},
+		{"sibling", "system.slice/app.service-canary", Deny},
+		{"other service", "system.slice/cron.service", Deny},
+		{"unknown origin", "", Deny},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := db
+			d.Cgroup = tc.cgroup
+			got := s.Evaluate(d)
+			if got.Verdict != tc.want {
+				t.Fatalf("got %s (%s), want %s", got.Verdict, got.Reason, tc.want)
+			}
+			if tc.want == Allow && !strings.Contains(got.Reason, "from system.slice/app.service") {
+				t.Fatalf("reason should name the cgroup: %s", got.Reason)
+			}
+		})
+	}
+	// a rule without cgroup still matches whoever asks
+	if got := s.Evaluate(Dest{Domain: "example.com", Port: 443, Cgroup: "user.slice"}); got.Verdict != Allow {
+		t.Fatalf("%+v", got)
+	}
+	if got := s.Rules()[0].Cgroup; got != "system.slice/app.service" {
+		t.Fatalf("view: %q", got)
+	}
+}
+
+func TestCgroupValidation(t *testing.T) {
+	for _, bad := range []string{"/", "  ", "a//b", "a/../b", "./x"} {
+		if _, err := Parse([]byte("version: 1\ndefault: deny\nallow:\n  - cgroup: '" + bad + "'\n")); err == nil {
+			t.Fatalf("%q should be rejected", bad)
+		}
+	}
+}
+
 func TestDomainRulesIncludesDeny(t *testing.T) {
 	s := mustParse(t, "version: 1\ndefault: deny\ndeny:\n  - domains: ['bad.example']\nallow:\n  - domains: ['*.example']\n")
 	if got := s.DomainRules("bad.example"); len(got) != 2 || got[0] != 0 || got[1] != 1 {

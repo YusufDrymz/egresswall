@@ -141,6 +141,38 @@ func TestTextDefaultAllow(t *testing.T) {
 	}
 }
 
+func TestCgroupAtoms(t *testing.T) {
+	p := build(t, `
+version: 1
+default: deny
+allow:
+  - name: app-db
+    cidrs: ["10.0.0.5"]
+    ports: ["5432"]
+    proto: tcp
+    cgroup: system.slice/app.service
+  - name: app-api
+    domains: ["api.example.com"]
+    ports: ["443"]
+    cgroup: system.slice/app.service
+`)
+	if p.Atoms[0].Cgroup != "system.slice/app.service" || p.Atoms[1].Cgroup != p.Atoms[0].Cgroup {
+		t.Fatalf("%+v", p.Atoms)
+	}
+	out := p.Text()
+	for _, want := range []string{
+		`socket cgroupv2 level 2 "system.slice/app.service" ip daddr 10.0.0.5 tcp dport 5432 accept`,
+		`socket cgroupv2 level 2 "system.slice/app.service" ip daddr @r1_v4 meta l4proto { tcp, udp } th dport 443 accept`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if CgroupLevel("a") != 1 || CgroupLevel("a/b/c") != 3 {
+		t.Fatal("level")
+	}
+}
+
 func TestSetFor(t *testing.T) {
 	if SetFor(3, netip.MustParseAddr("::ffff:1.2.3.4")) != "r3_v4" || SetFor(3, netip.MustParseAddr("2001:db8::1")) != "r3_v6" {
 		t.Fatal("family detection")

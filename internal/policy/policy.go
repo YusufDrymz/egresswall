@@ -40,24 +40,30 @@ type Policy struct {
 
 // Rule matches a destination. A rule with neither domains nor cidrs matches
 // any host, which is how you say "port 443 anywhere". Ports and proto empty
-// mean any.
+// mean any. Cgroup, when set, restricts the rule to sockets opened from that
+// cgroup v2 path (relative to the cgroup root, e.g. "system.slice/app.service")
+// or any cgroup below it.
 type Rule struct {
 	Name    string   `yaml:"name,omitempty"`
 	Domains []string `yaml:"domains,omitempty"`
 	CIDRs   []string `yaml:"cidrs,omitempty"`
 	Ports   []string `yaml:"ports,omitempty"`
 	Proto   string   `yaml:"proto,omitempty"`
+	Cgroup  string   `yaml:"cgroup,omitempty"`
 	Comment string   `yaml:"comment,omitempty"`
 }
 
 // Dest is one outbound connection attempt as the matcher sees it. Domain is
 // what DNS said this IP was, if anything did; it may be empty for IP-literal
 // connections, and that is a case the policy author has to think about.
+// Cgroup is where the socket came from when known; rules with a cgroup never
+// match a Dest without one.
 type Dest struct {
 	Domain string
 	IP     netip.Addr
 	Port   uint16
 	Proto  string
+	Cgroup string
 }
 
 type Decision struct {
@@ -76,6 +82,7 @@ type compiledRule struct {
 	prefixes []netip.Prefix
 	ports    []portRange
 	proto    string
+	cgroup   string
 	anyHost  bool
 }
 
@@ -185,6 +192,13 @@ func compileRule(r Rule, v Verdict, pos string) (compiledRule, error) {
 	default:
 		return c, fmt.Errorf("%s: proto must be tcp or udp, got %q", pos, r.Proto)
 	}
+	if r.Cgroup != "" {
+		cg, err := NormalizeCgroup(r.Cgroup)
+		if err != nil {
+			return c, fmt.Errorf("%s: %w", pos, err)
+		}
+		c.cgroup = cg
+	}
 	c.anyHost = len(c.exact) == 0 && len(c.suffixes) == 0 && len(c.prefixes) == 0
 	return c, nil
 }
@@ -205,6 +219,28 @@ func parsePortRange(s string) (portRange, error) {
 	return portRange{uint16(a), uint16(b)}, nil
 }
 
+// NormalizeCgroup validates a cgroup path and strips the slashes at either
+// end, so "/system.slice/app.service/" and "system.slice/app.service" are the
+// same rule. The root cgroup itself is not a valid target: a rule for
+// everything is a rule without a cgroup.
+func NormalizeCgroup(p string) (string, error) {
+	p = strings.Trim(strings.TrimSpace(p), "/")
+	if p == "" {
+		return "", fmt.Errorf("cgroup path is empty")
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("bad cgroup path %q", p)
+		}
+	}
+	return p, nil
+}
+
+// CgroupWithin reports whether child is parent or lives below it.
+func CgroupWithin(child, parent string) bool {
+	return child == parent || strings.HasPrefix(child, parent+"/")
+}
+
 // NormalizeDomain lowercases and strips the trailing dot DNS answers carry.
 func NormalizeDomain(d string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d)), ".")
@@ -217,9 +253,16 @@ func (s *Set) Default() Verdict { return s.def }
 func (s *Set) Evaluate(d Dest) Decision {
 	domain := NormalizeDomain(d.Domain)
 	proto := strings.ToLower(d.Proto)
+	cgroup := strings.Trim(d.Cgroup, "/")
 	for i := range s.rules {
 		r := &s.rules[i]
+		if r.cgroup != "" && !CgroupWithin(cgroup, r.cgroup) {
+			continue
+		}
 		if ok, why := r.match(domain, d.IP, d.Port, proto); ok {
+			if r.cgroup != "" {
+				why += " from " + r.cgroup
+			}
 			return Decision{Verdict: r.verdict, Rule: r.name, Reason: why}
 		}
 	}
@@ -280,6 +323,7 @@ type RuleView struct {
 	Prefixes []netip.Prefix // masked
 	Ports    []PortRange    // empty: any
 	Proto    string         // "", "tcp", "udp"
+	Cgroup   string         // "", or a cgroup v2 path relative to the root
 	AnyHost  bool
 }
 
@@ -288,7 +332,7 @@ type RuleView struct {
 func (s *Set) Rules() []RuleView {
 	out := make([]RuleView, len(s.rules))
 	for i, r := range s.rules {
-		v := RuleView{Name: r.name, Verdict: r.verdict, Proto: r.proto, AnyHost: r.anyHost}
+		v := RuleView{Name: r.name, Verdict: r.verdict, Proto: r.proto, Cgroup: r.cgroup, AnyHost: r.anyHost}
 		for d := range r.exact {
 			v.Exact = append(v.Exact, d)
 		}
