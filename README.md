@@ -122,6 +122,37 @@ instead of hanging on a timeout. Each refusal is logged by the kernel with the
 rule that caused it, and the daemon reads those back from `/dev/kmsg` and prints
 them with the DNS name attached.
 
+### Getting told about it
+
+`-alert-webhook https://…` posts refusals as JSON. Events are coalesced over a
+few seconds, so a process retrying in a loop is one entry with a count rather
+than a request per packet:
+
+```json
+{
+  "source": "egresswall",
+  "host": "web-01",
+  "sent": "2026-09-03T17:36:26Z",
+  "refused": [
+    {
+      "first": "2026-09-03T17:36:23Z",
+      "last": "2026-09-03T17:36:25Z",
+      "count": 14,
+      "host": "collect.evil.example",
+      "ip": "203.0.113.9",
+      "port": 443,
+      "proto": "tcp",
+      "cgroup": "system.slice/app.service"
+    }
+  ]
+}
+```
+
+Posting never blocks the enforcing loop. If the endpoint is down the request is
+retried once; if refusals arrive faster than it can take them they are counted
+and the count rides along in the next payload as `dropped`. A quiet host posts
+nothing.
+
 Things worth knowing before running it on a box you care about:
 
 - `-dry-run` touches nothing and prints what the policy would have refused.
@@ -231,8 +262,8 @@ Honest list, because an egress filter that oversells itself is worse than none:
 
 ## Roadmap
 
-- Alert sinks: journald first, then a webhook.
-- Batching set updates under heavy DNS load.
+- More alert sinks than a webhook, if anyone asks for one.
+- An `nftables` chain per policy file, so two policies can coexist.
 
 ## License
 

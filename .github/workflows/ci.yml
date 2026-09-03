@@ -80,10 +80,24 @@ jobs:
           ./egresswall enforce -policy policy.yaml -print
       - name: pull the container image before the wall goes up
         run: docker pull -q curlimages/curl:latest
+      - name: a webhook receiver on loopback
+        run: |
+          cat > hook.py <<'EOF2'
+          import http.server, json
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+                  self.send_response(200); self.end_headers()
+                  open('hook.out', 'a').write(body.decode() + "\n")
+              def log_message(self, *a): pass
+          http.server.HTTPServer(('127.0.0.1', 9099), H).serve_forever()
+          EOF2
+          python3 hook.py &
+          sleep 1
       - name: enforce while curling
         run: |
           sudo rmdir /sys/fs/cgroup/ewtest 2>/dev/null || true
-          sudo ./egresswall enforce -policy policy.yaml -forward -verbose 2>enforce.log &
+          sudo ./egresswall enforce -policy policy.yaml -forward -verbose -alert-webhook http://127.0.0.1:9099/ 2>enforce.log &
           EW=$!
           sleep 3
           sudo nft list ruleset
@@ -107,5 +121,18 @@ jobs:
           wait $EW || true
           echo "--- daemon log ---"; cat enforce.log
           grep -q "refused .*github.com):80" enforce.log || (echo "refusal was not reported with its name"; exit 1)
+      - name: the webhook got the refusals
+        run: |
+          cat hook.out
+          python3 - <<'EOF2'
+          import json
+          seen = [json.loads(l) for l in open('hook.out') if l.strip()]
+          assert seen, "no webhook payload arrived"
+          refused = [r for p in seen for r in p["refused"]]
+          assert any(r.get("host", "").endswith("github.com") and r["port"] == 80 for r in refused), refused
+          assert any(r["ip"] == "1.1.1.1" for r in refused), refused
+          assert all(p["source"] == "egresswall" and p["host"] for p in seen)
+          print(f"{len(seen)} payload(s), {len(refused)} destination(s)")
+          EOF2
           if sudo nft list tables | grep -q egresswall; then echo "table left behind"; exit 1; fi
           sudo rmdir /sys/fs/cgroup/ewtest || true

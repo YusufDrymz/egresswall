@@ -65,6 +65,15 @@ reddedilir: süreç timeout beklemek yerine milisaniyeler içinde net bir hatayl
 düşer. Her ret kernel log'una hangi kuralın sebep olduğuyla düşer; daemon bunu
 `/dev/kmsg`'den okuyup DNS ismiyle ekrana yazar.
 
+### Haber alma
+
+`-alert-webhook https://…` retleri JSON olarak POST'lar. Olaylar birkaç
+saniyelik pencerede birleştirilir: döngüde deneyen bir süreç paket başına
+istek değil, sayaçlı tek kayıt olur. Gönderim enforce döngüsünü asla
+bloklamaz; endpoint kapalıysa bir kez tekrar denenir, retler alınabileceğinden
+hızlı geliyorsa sayılır ve sayı bir sonraki gövdede `dropped` olarak gider.
+Sessiz bir host hiçbir şey göndermez. Örnek gövde için İngilizce README.
+
 Bilinmesi gerekenler:
 
 - `-dry-run` hiçbir şeye dokunmaz, sadece neyin reddedileceğini yazar. Önce
@@ -143,8 +152,8 @@ allow  registry.npmjs.org:443  domain registry.npmjs.org  (rule package-registri
 
 ## Yol haritası
 
-- Alarm hedefleri: önce journald, sonra webhook.
-- Yoğun DNS'te set yazımlarını batch'leme.
+- İstenirse webhook dışında alarm hedefleri.
+- Policy dosyası başına ayrı chain, iki policy bir arada dursun.
 
 ## Lisans
 
