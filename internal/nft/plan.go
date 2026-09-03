@@ -6,9 +6,17 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/YusufDrymz/egresswall/internal/policy"
 )
+
+// Add is one address going into one set, for one TTL.
+type Add struct {
+	Set string
+	IP  netip.Addr
+	TTL time.Duration
+}
 
 const (
 	TableName = "egresswall"

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/YusufDrymz/egresswall/internal/alert"
 	"github.com/YusufDrymz/egresswall/internal/capture"
 	"github.com/YusufDrymz/egresswall/internal/dnswatch"
 	"github.com/YusufDrymz/egresswall/internal/kmsg"
@@ -30,6 +31,7 @@ func runEnforce(args []string) error {
 	off := fs.Bool("off", false, "remove a leftover egresswall table and exit")
 	verbose := fs.Bool("verbose", false, "also report allowed connections")
 	forward := fs.Bool("forward", false, "also filter traffic this host forwards: containers, and anything routed through it")
+	webhook := fs.String("alert-webhook", "", "POST refusals to this URL as JSON, coalesced over a few seconds")
 	fs.Parse(args)
 
 	if *off {
@@ -65,6 +67,14 @@ func runEnforce(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var sink alert.Sink
+	if *webhook != "" {
+		w := alert.NewWebhook(*webhook)
+		defer w.Close()
+		sink = w
+		fmt.Fprintf(os.Stderr, "egresswall: refusals go to %s\n", *webhook)
+	}
+
 	dns := dnswatch.New(learnMinTTL)
 	var handle *nft.Handle
 	if *dryRun {
@@ -86,12 +96,19 @@ func runEnforce(args []string) error {
 		seed(set, handle, dns)
 		go func() {
 			err := kmsg.Tail(ctx, func(ev kmsg.Event) {
-				name, _ := dns.Lookup(ev.Dst, time.Now())
+				now := time.Now()
+				name, _ := dns.Lookup(ev.Dst, now)
 				rule := "default deny"
 				if ev.Rule != "" {
 					rule = "rule " + ev.Rule
 				}
 				fmt.Fprintf(os.Stderr, "refused  %s  %s\n", destText(ev.Dst.String(), name, ev.Port, ev.Proto), rule)
+				if sink != nil {
+					sink.Send(alert.Event{
+						At: now, Rule: ev.Rule, Host: name,
+						IP: ev.Dst, Port: ev.Port, Proto: ev.Proto,
+					})
+				}
 			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "egresswall: not reading the kernel log, refusals will only be in dmesg:", err)
@@ -119,6 +136,14 @@ func runEnforce(args []string) error {
 		}
 		seen.Store(key, now)
 		dec := set.Evaluate(d)
+		if dec.Verdict == policy.Deny && *dryRun && sink != nil {
+			// in dry run nothing reaches the kernel log, so this is the only
+			// place an alert can come from
+			sink.Send(alert.Event{
+				At: now, Rule: dec.Rule, Host: d.Domain,
+				IP: p.Dst, Port: p.DstPort, Proto: d.Proto, Cgroup: d.Cgroup,
+			})
+		}
 		if dec.Verdict == policy.Allow && !*verbose {
 			return
 		}
@@ -203,22 +228,24 @@ func appeared(missing []string) bool {
 }
 
 // feed puts a DNS answer's addresses into the sets of every rule whose
-// domain patterns cover the name, deny rules included.
+// domain patterns cover the name, deny rules included, in one batch.
 func feed(set *policy.Set, h *nft.Handle, a dnswatch.Answer) {
 	rules := set.DomainRules(a.Name)
 	if len(rules) == 0 {
 		return
 	}
+	adds := make([]nft.Add, 0, len(a.Addrs)*len(rules))
 	for _, ad := range a.Addrs {
 		ttl := ad.TTL
 		if ttl < learnMinTTL {
 			ttl = learnMinTTL
 		}
 		for _, i := range rules {
-			if err := h.AddAddr(nft.SetFor(i, ad.IP), ad.IP, ttl); err != nil {
-				fmt.Fprintf(os.Stderr, "egresswall: adding %s for %s: %v\n", ad.IP, a.Name, err)
-			}
+			adds = append(adds, nft.Add{Set: nft.SetFor(i, ad.IP), IP: ad.IP, TTL: ttl})
 		}
+	}
+	if err := h.AddAddrs(adds); err != nil {
+		fmt.Fprintf(os.Stderr, "egresswall: adding addresses for %s: %v\n", a.Name, err)
 	}
 }
 

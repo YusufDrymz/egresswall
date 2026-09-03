@@ -6,11 +6,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"sort"
 	"syscall"
-	"time"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -202,16 +200,25 @@ func (h *Handle) tcpOrUDP() ([]expr.Any, error) {
 	}, nil
 }
 
-// AddAddr puts an address into a set for ttl. Called for every DNS answer
-// that matched a domain rule, so it has to stay cheap: one netlink batch.
-func (h *Handle) AddAddr(set string, ip netip.Addr, ttl time.Duration) error {
-	s, ok := h.sets[set]
-	if !ok {
-		return fmt.Errorf("nft: no set %q", set)
+// AddAddrs puts addresses into sets and commits them in one netlink batch.
+// One DNS answer can touch several sets (a name covered by several rules,
+// A and AAAA records), and a flush per element would mean a syscall round
+// trip per address on a host that resolves constantly.
+func (h *Handle) AddAddrs(adds []Add) error {
+	if len(adds) == 0 {
+		return nil
 	}
-	ip = ip.Unmap()
-	if err := h.conn.SetAddElements(s, []nftables.SetElement{{Key: ip.AsSlice(), Timeout: ttl}}); err != nil {
-		return err
+	bySet := map[string][]nftables.SetElement{}
+	for _, a := range adds {
+		if _, ok := h.sets[a.Set]; !ok {
+			return fmt.Errorf("nft: no set %q", a.Set)
+		}
+		bySet[a.Set] = append(bySet[a.Set], nftables.SetElement{Key: a.IP.Unmap().AsSlice(), Timeout: a.TTL})
+	}
+	for name, elems := range bySet {
+		if err := h.conn.SetAddElements(h.sets[name], elems); err != nil {
+			return err
+		}
 	}
 	return h.conn.Flush()
 }
